@@ -57,15 +57,36 @@ export class CoreAgents {
   }
   get(chat: string) { return this.store.get<CoreAgent>('agent', chat) }
   all() { return this.store.all<CoreAgent>('agent') }
-  terminal(agent: CoreAgent) {
+  terminal(agent: CoreAgent): CoreTerminal | undefined {
+    const terminal = this.found(agent)
+    // The agent's own end: the Herdr app keeps its terminals, so a lost agent leaves a shell at the same address.
+    return terminal && this.kept(agent, terminal) ? { ...terminal, state: 'finished', pid: agent.pid, status: null, foreground: null } : terminal
+  }
+  private found(agent: CoreAgent) {
     if (agent.terminal) {
       const terminal = this.core.current.terminals.get(agent.terminal)
       if (terminal?.labels['shepherdr.installation'] === this.installation.id && terminal.labels['shepherdr.launch'] === agent.launch) return terminal
     }
     return [...this.core.current.terminals.values()].find(t => t.labels['shepherdr.installation'] === this.installation.id && t.labels['shepherdr.launch'] === agent.launch)
   }
+  /** Core keep never re-runs a command: a new pid in the agent's terminal is the shell that replaced it. */
+  private kept(agent: CoreAgent, terminal: CoreTerminal) { return !!this.config.herdrApp && agent.pid !== undefined && terminal.pid != null && terminal.pid !== agent.pid }
+  private ending = new Set<string>()
+  /** Herdr app ids: a coordinator gets its space and a tab, a task's agent a tab there; others stay its sub-agents. */
+  private herdrLabels(space: CoreSpace, chat: string, role: CoreAgent['role'], task?: string): Record<string, string> {
+    const tab = role === 'coordinator' && chat === space.id ? `${space.id}:coordinator` : role === 'task' && task && chat === `${task}/Agent` ? task : undefined
+    if (!this.config.herdrApp || !tab) return {}
+    const id = (prefix: string, key: string) => prefix + createHash('sha256').update(`${this.installation.id}:${key}`).digest('hex').slice(0, 32)
+    return { 'herdr.space': id('sp', space.id), 'herdr.tab': id('tb', tab) }
+  }
   reconcile() {
     for (const agent of this.all()) {
+      const found = this.found(agent), key = found && `${found.address}:${found.pid}`
+      // A kept shell would stay an app tab beside the restarted agent; with keep, a kill is final.
+      if (found?.state === 'live' && found.address === agent.terminal && this.kept(agent, found) && !this.ending.has(key!)) {
+        this.ending.add(key!)
+        void this.core.call('terminal.kill', { terminal: found.address }).catch(() => this.ending.delete(key!))
+      }
       const terminal = this.terminal(agent)
       if (!this.store.get('agent-launch', agent.launch)) this.store.set('agent-launch', agent.launch, agent)
       if (terminal && (agent.terminal !== terminal.address || agent.pid === undefined && terminal.pid != null)) { agent.terminal = terminal.address; agent.pid ??= terminal.pid ?? undefined; this.store.set('agent', agent.chat, agent); this.store.set('agent-launch', agent.launch, agent); if (agent.pilot) this.store.set('pilot-capture', agent.launch, agent); this.changed(agent.chat) }
@@ -196,6 +217,7 @@ export class CoreAgents {
       labels: {
         'shepherdr.installation': this.installation.id, 'shepherdr.space': space.id, 'shepherdr.role': role,
         'shepherdr.chat': chat, 'shepherdr.task': options.task ?? '', 'shepherdr.state': 'working', 'shepherdr.launch': launch,
+        ...this.herdrLabels(space, chat, role, options.task),
       },
       env: { SHEPHERDR_CHAT: '', SHEPHERDR_SECRET_FILE: '', SHEPHERDR_URL: '',
         ...shellEnv, SHEPHERDR_CORE_HOOK_FILE: hook },

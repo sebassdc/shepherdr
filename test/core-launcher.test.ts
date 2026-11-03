@@ -40,6 +40,8 @@ test('a new home never takes on its core\'s machines unless its start names that
     const home = join(root, 'trial')
     const config = coreConfig(['--home', home, '--port', '17941'])
     expect(config.chosenCore).toBe(false)
+    expect(config.herdrApp).toBe(false)
+    expect(coreConfig(['--home', home, '--herdr-app']).herdrApp).toBe(true)
     const refused = await coreProblem(config, machines)
     expect(refused).toContain('2 machines (mac-mini, vps)')
     expect(refused).toContain('Nothing was started')
