@@ -246,6 +246,8 @@ describe('adding a space', () => {
     const r = await fetch(`${base}/api/spaces`, { method: 'POST', headers: { origin: `http://${host}`, 'x-shepherdr': '1' }, body })
     expect(await r.json()).toEqual({ place: 'p:h:x' })
     expect(acted.at(-1)).toEqual({ machine: 'mac', path: '~/dev/x', name: 'x', create: true })
+    await fetch(`${base}/api/spaces`, { method: 'POST', headers: { origin: `http://${host}`, 'x-shepherdr': '1' }, body: JSON.stringify({ machine: 'mac', path: '~/work', repos: 1 }) })
+    expect(acted.at(-1)).toEqual({ machine: 'mac', path: '~/work', name: undefined, create: false, repos: true })
   })
 })
 
