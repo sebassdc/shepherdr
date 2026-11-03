@@ -146,6 +146,7 @@ async function start(config: CoreConfig, foreground: boolean) {
     const boot = randomUUID()
     const args = ['--home', config.home, '--port', String(config.port), '--core-bin', config.binary, '--core-session', config.session, '--core-socket', config.socket]
     if (config.plugins === false) args.push('--no-plugin-updates')
+    if (config.herdrApp) args.push('--herdr-app')
     if (foreground) {
       // Server starts before releasing the lifecycle lock; no second start can race its bind.
       const { runCoreServer } = await import('./main.ts')

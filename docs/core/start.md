@@ -64,6 +64,23 @@ watcher and switches. Ordinary startup watches the selected home's plugins and o
 of the started application, and swaps plugin runtime/assets without restarting agents. It never follows main or
 another checkout ref. Keep the installed source/dependencies available while it runs. See [Plugins](../plugins.md).
 
+## Herdr app
+
+`--herdr-app` shows Shepherdr's agents in the Herdr desktop app as ordinary spaces and tabs, where you can watch and
+type into each one. The app reads only the core session `default`, so start with both:
+
+```sh
+shepherdr start --core-session default --herdr-app
+```
+
+- Each space's coordinator gets its own app space, with a tab for itself; each task's agent gets a tab in that space.
+  Reviewers, child agents and browsers get no tab: the app lists them under the agent that started them.
+- The ids are fixed per space and task, so an agent that starts again comes back in the same space and tab.
+- Closing an agent's tab in the app ends that agent. Shepherdr shows it stopped; the next message to it, or Restart,
+  starts it again in the same tab.
+- The app keeps its terminals: when an agent is lost (a crash, a core restart, a reboot) core leaves a shell in its
+  place. Shepherdr counts that agent as ended and closes the shell, so no stray tab stays behind.
+
 ## First Codex start
 
 Codex can ask you to trust the new folder and Shepherdr's generated hooks, whatever its permission settings: even

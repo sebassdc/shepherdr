@@ -49,7 +49,8 @@ export class CoreTaskProcesses {
       const terminal = this.source.agents.terminal(agent)
       if (!this.source.machineConnected(agent.machine) || !terminal) throw new Refusal('Task cleanup is unconfirmed; reconnect its machine before closing or deleting its work')
       if (agent.pid !== undefined && agent.pid !== terminal.pid) throw new Refusal('Task process identity changed; its work was left untouched')
-      owned.set(terminal.address, { pid: terminal.pid, created: terminal.created_ms })
+      const held = this.source.core.current.terminals.get(terminal.address) ?? terminal // what core runs there: a shell kept for the Herdr app ends too
+      owned.set(terminal.address, { pid: held.pid, created: held.created_ms })
     }
     const collect = () => {
       let changed = true

@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { CoreAgents } from '../server/core/agents.ts'
 import { CoreStore } from '../server/core/store.ts'
@@ -168,4 +169,63 @@ for (const kind of ['claude', 'codex'] as const) test(`${kind} coordinator launc
       expect(argv).not.toContain('--dangerously-skip-permissions')
     }
   } finally { store.close(); rmSync(home, { recursive: true, force: true }) }
+})
+
+function herdrFixture(herdrApp: boolean) {
+  const home = mkdtempSync(join(tmpdir(), 'shep-herdr-app-')), store = new CoreStore(home)
+  const terminals = new Map<string, import('../server/core/protocol.ts').CoreTerminal>(), kills: string[] = []
+  let count = 0
+  const core = { current: { terminals }, call: async (method: string, input: { labels: Record<string, string>; terminal: string }) => {
+    if (method === 'terminal.kill') { kills.push(input.terminal); return {} }
+    const address = `t${++count}`, terminal = { address, labels: input.labels, pid: count * 10, state: 'live', created_ms: count } as import('../server/core/protocol.ts').CoreTerminal
+    terminals.set(address, terminal); return terminal
+  } } as unknown as CoreSession
+  const mailbox = { issue: () => ({ id: `grant-${count}`, credential: {} }) } as unknown as Mailbox
+  const agents = new CoreAgents({ home, port: 0, session: 'default', socket: '/unused', binary: 'hc', herdrApp }, { format: 'shepherdr-core', schema: 1, id: 'installation' }, core, store, mailbox, async () => undefined, () => {})
+  const space = { id: 'space', name: 'Example', machine: 'machine', folder: '/unused', base: 'main', prefix: 'EX', mode: 'regular' as const, added: 1 }
+  return { agents, terminals, kills, space, close() { store.close(); rmSync(home, { recursive: true, force: true }) } }
+}
+const herdrId = (prefix: string, key: string) => prefix + createHash('sha256').update(`installation:${key}`).digest('hex').slice(0, 32)
+
+test('with --herdr-app a coordinator gets its own app space and tab, a task agent a tab there, a reviewer neither', async () => {
+  const f = herdrFixture(true)
+  try {
+    const labels = (agent: CoreAgent) => f.terminals.get(agent.terminal!)!.labels
+    const coordinator = await f.agents.launch(f.space, 'space', 'claude', 'Wait')
+    const task = await f.agents.launch(f.space, 'EX-1/Agent', 'claude', 'Wait', { role: 'task', task: 'EX-1', parent: coordinator })
+    const reviewer = await f.agents.launch(f.space, 'EX-1/Reviewer-1', 'claude', 'Review', { role: 'reviewer', task: 'EX-1', parent: task, readOnly: true })
+    expect(labels(coordinator)).toMatchObject({ 'herdr.space': herdrId('sp', 'space'), 'herdr.tab': herdrId('tb', 'space:coordinator') })
+    expect(labels(task)).toMatchObject({ 'herdr.space': herdrId('sp', 'space'), 'herdr.tab': herdrId('tb', 'EX-1') })
+    expect(labels(coordinator)['herdr.space']).toMatch(/^sp[0-9a-f]{32}$/)
+    expect(labels(reviewer)['herdr.space']).toBeUndefined(); expect(labels(reviewer)['herdr.tab']).toBeUndefined()
+    // A relaunch lands in the same app space and tab.
+    f.terminals.get(coordinator.terminal!)!.state = 'finished'
+    const again = await f.agents.launch(f.space, 'space', 'claude', 'Wait', { resume: true })
+    expect(again.terminal).not.toBe(coordinator.terminal)
+    expect(labels(again)).toMatchObject({ 'herdr.space': labels(coordinator)['herdr.space'], 'herdr.tab': labels(coordinator)['herdr.tab'] })
+  } finally { f.close() }
+})
+
+test('without --herdr-app no terminal carries app labels', async () => {
+  const f = herdrFixture(false)
+  try {
+    const coordinator = await f.agents.launch(f.space, 'space', 'claude', 'Wait')
+    const task = await f.agents.launch(f.space, 'EX-1/Agent', 'claude', 'Wait', { role: 'task', task: 'EX-1' })
+    for (const agent of [coordinator, task]) expect(Object.keys(f.terminals.get(agent.terminal!)!.labels).some(key => key.startsWith('herdr.'))).toBe(false)
+  } finally { f.close() }
+})
+
+for (const herdrApp of [true, false]) test(`a shell core keep put in place of a lost agent ${herdrApp ? 'counts as its end and is closed' : 'is left alone without --herdr-app'}`, async () => {
+  const f = herdrFixture(herdrApp)
+  try {
+    const agent = await f.agents.launch(f.space, 'space', 'claude', 'Wait')
+    const terminal = f.terminals.get(agent.terminal!)!
+    expect(f.agents.terminal(agent)?.state).toBe('live')
+    terminal.pid = 999 // restarted as a shell: same address and labels, new pid
+    f.agents.reconcile(); f.agents.reconcile()
+    expect(f.agents.terminal(agent)?.state).toBe(herdrApp ? 'finished' : 'live')
+    expect(f.kills).toEqual(herdrApp ? [agent.terminal!] : [])
+    expect(f.agents.get('space')?.pid).toBe(agent.pid)
+    if (herdrApp) await expect(f.agents.send('space', 'hello')).rejects.toThrow('stopped')
+  } finally { f.close() }
 })
