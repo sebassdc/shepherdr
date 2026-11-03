@@ -202,6 +202,7 @@ export class CoreAutomations {
     if (!space || space.home) throw new Refusal('Choose a repository space with --space NAME')
     if (!name.trim() || name.length > 120) throw new Refusal('Give the automation a name of at most 120 characters')
     if (op === 'add' || op === 'edit') {
+      if (space.repos) throw new Refusal('A repos space has no single repository for automated tasks; use one of its repos as a space')
       const was = this.model.find(space.id, name)
       if (was && this.busy.has(was.id)) throw new Refusal('This automation is starting a task; wait before changing it')
       const when = one(parsed, 'when'), on = one(parsed, 'on'), title = one(parsed, 'task'), brief = one(parsed, 'brief')

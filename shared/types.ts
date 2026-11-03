@@ -859,12 +859,14 @@ export interface Folders {
   likely?: FolderEntry[]
 }
 
-/** Adding a space from the sidebar: an existing repo, or (create) a new one made there first; its name as given */
+/** Adding a space from the sidebar: an existing repo, or (create) a new one made there first, or (repos) a folder of
+ *  repos, each task picking one; its name as given */
 export interface AddSpace {
   machine: string
   path: string
   name?: string
   create?: boolean
+  repos?: boolean
 }
 
 /* ---------- a task's worktree, read only, for its side panel ---------- */

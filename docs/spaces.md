@@ -37,6 +37,14 @@ also has a side panel: its live core terminal, its files, its diff against main 
   TG…) is its own. A repo is added as it is; any other folder, or one not made yet, becomes a new repo first (git init
   on main with an empty first commit; files already there stay uncommitted). Either way it gets its own herdr space
   and coordinator, and opens. Only folders in your home are listed or made.
+- A **repos space** is one folder holding many repos (`~/work` with `a/`, `b/` and `c/` in it), with one coordinator
+  for all of them, working in that folder. Add it with the **A folder of repos** switch, shown for an existing folder
+  that is no repo, or `shepherdr space add ~/work --repos`. Nothing in it becomes a repo, and it needs no first commit.
+  Each task names its repo (`shepherdr task add "Title" --brief "…" --repo a`, relative to the folder or a full path
+  inside it; the repo needs a first commit) and starts from that repo's checked-out branch, or `--base`. Its worktree
+  folder carries the repo's name. A repos space has no base branch, Repository settings, Autopilot, automations or
+  red-main alerts; its task id prefix works as any space's. A repo inside it can still be a space of its own; the same
+  folder can't be both.
 - New messages show like Slack's unread, for coordinators' chats only: a coordinator's chat with something new from it
   or Shepherdr that you haven't seen makes its space's row bold in the sidebar (a task's row in the space's chat changing
   counts too). A folded heading still shows the spaces under it with something new or a

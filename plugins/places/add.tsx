@@ -7,6 +7,7 @@ import clsx from 'clsx'
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { goPlace, placeOf, setUI, useSnap, useUI } from '@client/kernel.ts'
 import { Sheet, SheetClose } from '@client/Stack.tsx'
+import { Switch } from '@client/Settings.tsx'
 import { CheckCircleIcon, CheckIcon, FolderIcon, ic, Menu, MenuItem, Meta, NextIcon, PlusIcon, Primary, ServerIcon, UpDownIcon, Who } from '@client/ui.tsx'
 import { machineName, nameProblem, slugify, type FolderEntry, type Folders, type Machine, type Snapshot } from '@shared/types.ts'
 
@@ -100,6 +101,7 @@ function AddDialog() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [opening, setOpening] = useState<string | null>(null)
+  const [repos, setRepos] = useState(false)
   const input = useRef<HTMLInputElement>(null)
   const listId = useId()
 
@@ -125,8 +127,11 @@ function AddDialog() {
   // what the typed path is: only once its answer is in (while typing, the last one would mislead)
   const t = target?.for === `${machine}\n${named}` ? target : null
   const info = t?.data
-  const create = !!info && !info.repo && (!info.exists || info.dir)
-  const ready = !!info && !info.added && (!!info.repo || create)
+  // a folder that is no repo can stay one: a folder of repos, each task picking its own
+  const plain = !!info && info.exists && info.dir && !info.repo && !info.added
+  const asRepos = repos && plain
+  const create = !asRepos && !!info && !info.repo && (!info.exists || info.dir)
+  const ready = !!info && !info.added && (!!info.repo || create || asRepos)
   const shownName = name ?? slugify(base(path))
   const nameBad = nameProblem(shownName, snap.places.filter((p) => p.machine === machine).map((p) => p.name))
 
@@ -164,7 +169,7 @@ function AddDialog() {
       const r = await fetch('api/spaces', {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-shepherdr': '1' },
-        body: JSON.stringify({ machine, path: named, name: shownName, create }),
+        body: JSON.stringify({ machine, path: named, name: shownName, create, repos: asRepos }),
       })
       const b = (await r.json().catch(() => ({}))) as { place?: string; error?: string }
       if (!r.ok || !b.place) throw new Error(b.error ?? `${r.status}`)
@@ -208,6 +213,7 @@ function AddDialog() {
     if (info.repo && info.repo !== info.path) return `Inside ${info.repo}, which is added.`
     if (info.repo) return 'A git repo. It gets its own herdr space and coordinator.'
     if (info.exists && !info.dir) return 'That is a file, not a folder.'
+    if (asRepos) return 'A folder of repos. It gets one coordinator; each task works in one of its repos, on that repo’s branch.'
     if (info.exists) return 'Not a git repo yet. Create makes it one, with an empty first commit on main; its files stay as they are.'
     return 'No folder here yet. Create makes it, with git and a first commit on main.'
   })()
@@ -310,6 +316,12 @@ function AddDialog() {
             {mark ? <span className="flex h-lh items-center">{mark}</span> : null}
             <span className="min-w-0">{status}</span>
           </p>
+          {plain ? (
+            <label className="flex items-center justify-between gap-3 text-[0.8125rem] text-fg2 phone:text-[0.9375rem]">
+              <span>A folder of repos: keep it as it is</span>
+              <Switch on={repos} label="A folder of repos" onChange={setRepos} />
+            </label>
+          ) : null}
           {named && named !== '~' ? (
             <div className="flex flex-col gap-1.5">
               <label htmlFor={`${listId}-name`} className="text-[0.75rem] font-medium text-fg3 phone:text-[0.875rem]">

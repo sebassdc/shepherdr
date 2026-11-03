@@ -48,8 +48,8 @@ export class CorePlaces {
     if (op === 'list') return JSON.stringify(spaces.map(space => ({ ...space, name: coreSpaceName(this.source, space) })), null, 2)
     if (agent.role !== 'coordinator' || agent.pilot) throw new Refusal('Only a regular coordinator manages spaces, when the human asks')
     if (op === 'add') {
-      if (words.length !== 1 || parsed.flags.size || Object.keys(parsed.opts).some(key => key !== 'name')) throw new Refusal('Use space add PATH [--name NAME]')
-      return (await this.source.addSpace({ machine: agent.machine, path: words[0]!, name: one(parsed, 'name') })).place
+      if (words.length !== 1 || [...parsed.flags].some(flag => flag !== 'repos') || Object.keys(parsed.opts).some(key => key !== 'name')) throw new Refusal('Use space add PATH [--repos] [--name NAME]')
+      return (await this.source.addSpace({ machine: agent.machine, path: words[0]!, name: one(parsed, 'name'), repos: parsed.flags.has('repos') })).place
     }
     if (op === 'rename') {
       if (words.length !== 2 || parsed.flags.size || Object.keys(parsed.opts).length) throw new Refusal('Use space rename NAME NEW_NAME')
@@ -72,6 +72,7 @@ export class CorePlaces {
   }
   async setBase(id: string, base: string, actor?: CoreAgent) {
     const space = this.source.space(id)
+    if (space?.repos) throw new Refusal('A repos space has no single base branch; set --base per task')
     if (!space || space.home || this.removing(id)) throw new Refusal('Choose a repository space and branch.')
     if (!/^[A-Za-z0-9][A-Za-z0-9/_.-]*$/.test(base) || base.includes('..')) throw new Refusal('Choose a valid base branch for a repository space')
     await this.source.tasks.git.head({ machine: space.machine, folder: space.folder }, base)

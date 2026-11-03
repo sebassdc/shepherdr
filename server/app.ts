@@ -163,7 +163,7 @@ export function startApp({ source, dist, push, port, host = '127.0.0.1', updates
         if (path === '/api/spaces' && req.method === 'POST') {
           if (!source.addSpace) return json({ error: 'Adding spaces is not possible here.' }, 404)
           const b = (await req.json()) as AddSpace
-          return json(await source.addSpace({ machine: String(b.machine ?? ''), path: String(b.path ?? ''), name: b.name === undefined ? undefined : String(b.name), create: !!b.create }))
+          return json(await source.addSpace({ machine: String(b.machine ?? ''), path: String(b.path ?? ''), name: b.name === undefined ? undefined : String(b.name), create: !!b.create, repos: !!b.repos }))
         }
         if (path === '/api/worktree') {
           if (!source.worktree) return json({ error: 'Not possible here.' }, 404)

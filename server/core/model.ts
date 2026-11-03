@@ -7,6 +7,8 @@ export interface CoreSpace {
   machine: string
   folder: string
   home?: boolean
+  /** a folder of repos, not one: each task names its repo, and there is no space-wide base */
+  repos?: boolean
   base: string
   prefix: string
   mode: Mode
