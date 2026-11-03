@@ -210,7 +210,13 @@ export class CoreSource extends Emitter<SourceEvents> implements Source {
     if (remote.state !== 'connected') throw new Error(`${remote.name} is reconnecting`)
     return remote.name
   }
-  spaces() { return this.store.all<CoreSpace>('space').filter(space => !space.removed) }
+  // Settings sections ask for the spaces thousands of times per snapshot; parse them once per synchronous run.
+  // shortcut: a space saved and listed in one synchronous run is listed stale; key it on store writes if that bites.
+  private spaceList?: CoreSpace[]
+  spaces() {
+    if (!this.spaceList) { this.spaceList = this.store.all<CoreSpace>('space').filter(space => !space.removed); queueMicrotask(() => { this.spaceList = undefined }) }
+    return this.spaceList
+  }
   space(id: string) { const space = this.store.get<CoreSpace>('space', id); return space?.removed ? undefined : space }
   async refresh() {
     if (this.refreshing) return this.refreshing

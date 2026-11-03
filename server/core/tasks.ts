@@ -115,7 +115,20 @@ export class CoreTasks {
   }
   all() { return this.source.store.all<CoreTask>('task') }
   get(id: string) { return this.source.store.get<CoreTask>('task', id) }
-  forChat(chat: string) { return this.all().find(task => task.chat === chat || `${task.id}/Reviewer` === chat || chat.startsWith(`${task.id}/Reviewer-`)) }
+  // A snapshot asks this for every agent; scanning and parsing every task each time made it agents × tasks parses.
+  // shortcut: the index lives until the next microtask, so a task created and looked up in one synchronous run is missed.
+  private chatIndex?: { byChat: Map<string, string>; ids: Set<string> }
+  forChat(chat: string) {
+    if (!this.chatIndex) {
+      const index = { byChat: new Map<string, string>(), ids: new Set<string>() }
+      for (const task of this.all()) { if (!index.byChat.has(task.chat)) index.byChat.set(task.chat, task.id); index.ids.add(task.id) }
+      this.chatIndex = index
+      queueMicrotask(() => { this.chatIndex = undefined })
+    }
+    const reviewed = /^(.+)\/Reviewer(?:-|$)/.exec(chat)?.[1]
+    const id = this.chatIndex.byChat.get(chat) ?? (reviewed && this.chatIndex.ids.has(reviewed) ? reviewed : undefined)
+    return id === undefined ? undefined : this.get(id)
+  }
   /** Nobody is left to read an answer in a merged or closed task's own chat. */
   finished(chat: string) { const task = this.forChat(chat); return task?.chat === chat && ['merged', 'closed'].includes(task.workflow) }
   private save(task: CoreTask) { task.updatedAt = Date.now(); this.source.store.set('task', task.id, task); this.source.emit('snapshot') }

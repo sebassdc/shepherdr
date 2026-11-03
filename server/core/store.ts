@@ -22,17 +22,31 @@ export class CoreStore {
       CREATE TABLE IF NOT EXISTS commands (id TEXT PRIMARY KEY, hash TEXT NOT NULL, result TEXT, error TEXT);
       CREATE TABLE IF NOT EXISTS counters (key TEXT PRIMARY KEY, value INTEGER NOT NULL);`)
   }
+  // A snapshot reads the same rows thousands of times in one synchronous run. Keep the raw text until the next
+  // microtask or write, and parse per call so no caller shares an object.
+  // shortcut: writes made straight through `db` don't clear it; they are deletes followed by an emit, never a read in the same run.
+  private rows?: { one: Map<string, string | null>; many: Map<string, string[]> }
+  private cache() {
+    if (!this.rows) { this.rows = { one: new Map(), many: new Map() }; queueMicrotask(() => { this.rows = undefined }) }
+    return this.rows
+  }
   get<T>(kind: string, key: string): T | undefined {
-    const row = this.db.query('SELECT value FROM records WHERE kind=? AND key=?').get(kind, key) as { value: string } | null
-    return row ? JSON.parse(row.value) as T : undefined
+    const one = this.cache().one, id = `${kind}\0${key}`
+    let value = one.get(id)
+    if (value === undefined) { value = (this.db.query('SELECT value FROM records WHERE kind=? AND key=?').get(kind, key) as { value: string } | null)?.value ?? null; one.set(id, value) }
+    return value === null ? undefined : JSON.parse(value) as T
   }
   all<T>(kind: string): T[] {
-    return (this.db.query('SELECT value FROM records WHERE kind=? ORDER BY rowid').all(kind) as { value: string }[]).map(row => JSON.parse(row.value) as T)
+    const many = this.cache().many
+    let values = many.get(kind)
+    if (!values) { values = (this.db.query('SELECT value FROM records WHERE kind=? ORDER BY rowid').all(kind) as { value: string }[]).map(row => row.value); many.set(kind, values) }
+    return values.map(value => JSON.parse(value) as T)
   }
   set(kind: string, key: string, value: unknown) {
+    this.rows = undefined
     this.db.query('INSERT INTO records VALUES(?,?,?) ON CONFLICT(kind,key) DO UPDATE SET value=excluded.value').run(kind, key, JSON.stringify(value))
   }
-  delete(kind: string, key: string) { this.db.query('DELETE FROM records WHERE kind=? AND key=?').run(kind, key) }
+  delete(kind: string, key: string) { this.rows = undefined; this.db.query('DELETE FROM records WHERE kind=? AND key=?').run(kind, key) }
   next(key: string) {
     return this.db.transaction(() => {
       this.db.query('INSERT INTO counters VALUES(?,1) ON CONFLICT(key) DO UPDATE SET value=value+1').run(key)
