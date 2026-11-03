@@ -313,7 +313,7 @@ export class CoreSource extends Emitter<SourceEvents> implements Source {
       settings: this.secrets.pages([...this.settings.sections(this.devices(), this.pushWarnings()).map(section => this.pilots.wakes.section(section)), this.plugins.section(this.pluginUpdates?.status()), { name: 'Machines', about: 'Every machine Shepherdr reaches, and how it is now.', rows: [
         { label: this.store.get<string>('name', `m:${this.local.id}`) || this.local.name, key: '', value: this.connected() ? 'Main · reachable' : "Main · can't reach", fixed: true },
         ...this.machines.map(machine => ({ label: this.store.get<string>('name', `m:${machine.id}`) || machine.name, key: '', value: this.machineConnected(machine.id) ? 'Reachable' : "Can't reach", fixed: true })),
-      ] }, ...spaces.filter(space => !space.home).flatMap(space => [repositorySection(space.id, space.machine, space.base), taskIdsSection(space.id, space.machine, space.prefix, taskSequence(this.store, space).last + 1)])]),
+      ] }, ...spaces.filter(space => !space.home).flatMap(space => [...space.repos ? [] : [repositorySection(space.id, space.machine, space.base)], taskIdsSection(space.id, space.machine, space.prefix, taskSequence(this.store, space).last + 1)])]),
       last: this.unread.last(), read: this.unread.read(),
     }
   }
@@ -689,11 +689,12 @@ export class CoreSource extends Emitter<SourceEvents> implements Source {
   show [--space NAME | --machine] [--section NAME] | models [claude|codex]
   set KEY VALUE | unset KEY [--space NAME | --machine] (regular coordinator, when the human asks)
   alert TITLE [--body WHY] [--task ID]
-  space list | space add PATH [--name NAME] | space rename NAME NEW_NAME | space remove NAME
+  space list | space add PATH [--repos] [--name NAME] | space rename NAME NEW_NAME | space remove NAME
+    (--repos: a folder holding many repos; each task there names its own with --repo)
   space set base BRANCH --space NAME
   task add TITLE --brief FULL_BRIEF [--desc FULL_BRIEF] [--agent claude|codex] [--model ID] [--effort LEVEL]
     [--reviewer claude|codex] [--reviewer-model ID] [--reviewer-effort LEVEL] [--set KEY=VALUE]
-    [--space NAME] [--base BRANCH] [--later] [--after ID,ID]
+    [--space NAME] [--repo PATH (a repos space only, relative to it)] [--base BRANCH] [--later] [--after ID,ID]
   task list [--archived] [--space NAME] [--after next] | task show ID [--from nextFrom --revision REV]
   task chat ID [--limit 1..100] [--before CURSOR]
   task start ID [MESSAGE] | task tell ID TEXT
@@ -801,13 +802,23 @@ Use hc for starting, messaging and waiting on core child agents. Never use a web
   }
   async addSpace(request: AddSpace) {
     const folder = await this.folders(request.machine, request.path)
-    if (request.create && !folder.repo) await newRepository(this.files, request.machine, await this.agents.bun(request.machine), folder.path)
-    const repo = await this.folders(request.machine, folder.path)
-    if (!repo.repo) throw new Error('Choose a git repository')
-    try { await this.tasks.git.head({ machine: request.machine, folder: repo.repo }) }
-    catch { throw new Error('The repository needs a first commit before it can become a space') }
+    let top: string
+    if (request.repos) {
+      if (!folder.exists || !folder.dir) throw new Error('Choose an existing folder of repos')
+      const [real, home] = (await this.files.exec(request.machine, ['sh', '-c', 'pwd -P; cd && pwd -P'], folder.path)).toString('utf8').trim().split('\n')
+      if (!real || real === home) throw new Error('Your home folder is the home space already: pick a folder in it')
+      top = real
+    } else {
+      if (request.create && !folder.repo) await newRepository(this.files, request.machine, await this.agents.bun(request.machine), folder.path)
+      const repo = await this.folders(request.machine, folder.path)
+      if (!repo.repo) throw new Error('Choose a git repository')
+      try { await this.tasks.git.head({ machine: request.machine, folder: repo.repo }) }
+      catch { throw new Error('The repository needs a first commit before it can become a space') }
+      top = repo.repo
+    }
     const saved = this.store.all<CoreSpace>('space')
-    const existing = saved.find(space => space.machine === request.machine && space.folder === repo.repo)
+    const existing = saved.find(space => space.machine === request.machine && space.folder === top)
+    if (existing && !existing.home && !!existing.repos !== !!request.repos) throw Error(`This folder is ${existing.repos ? 'a repos' : 'a repository'} space${existing.removed ? ' you removed: add it back the same way' : ' already'}`)
     if (existing) {
       if (this.places.removing(existing.id)) throw Error('This space is being removed; retry shortly')
       if (existing.removed) {
@@ -819,16 +830,17 @@ Use hc for starting, messaging and waiting on core child agents. Never use a web
       }
       return { place: existing.id }
     }
-    const name = request.name || slugify(basename(repo.repo))
+    const name = request.name || slugify(basename(top))
     const problem = nameProblem(name, this.places.names(request.machine))
     if (problem) throw new Error(problem)
     const id = `p:${request.machine}:${name}`
-    const base = (await this.files.exec(request.machine, ['git', 'symbolic-ref', '--short', 'HEAD'], repo.repo)).toString().trim()
-    const concurrent = this.store.all<CoreSpace>('space').find(space => space.machine === request.machine && (space.folder === repo.repo || space.id === id))
-    if (concurrent) { if (concurrent.folder === repo.repo && !concurrent.removed) return { place: concurrent.id }; throw Error('This space name was reserved by another request; retry with another name') }
+    // a repos space has no base of its own: each task takes its repo's
+    const base = request.repos ? '' : (await this.files.exec(request.machine, ['git', 'symbolic-ref', '--short', 'HEAD'], top)).toString().trim()
+    const concurrent = this.store.all<CoreSpace>('space').find(space => space.machine === request.machine && (space.folder === top || space.id === id))
+    if (concurrent) { if (concurrent.folder === top && !concurrent.removed && !!concurrent.repos === !!request.repos) return { place: concurrent.id }; throw Error('This space name or folder was reserved by another request; retry') }
     const changedName = nameProblem(name, this.places.names(request.machine))
     if (changedName) throw Error(changedName)
-    this.store.set('space', id, { id, machine: request.machine, name, folder: repo.repo, base, prefix: automaticTaskPrefix(this.store, request.machine, name), mode: 'regular', added: Date.now() } satisfies CoreSpace)
+    this.store.set('space', id, { id, machine: request.machine, name, folder: top, ...(request.repos ? { repos: true } : {}), base, prefix: automaticTaskPrefix(this.store, request.machine, name), mode: 'regular', added: Date.now() } satisfies CoreSpace)
     this.emit('snapshot'); return { place: id }
   }
   watch(_chats: string[], _terms: string[]) {}

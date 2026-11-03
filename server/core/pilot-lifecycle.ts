@@ -18,7 +18,7 @@ export class CorePilotLifecycle {
   }
   start(place: string, config: CorePilotConfig) {
     const space = this.source.space(place)
-    if (!space || space.home) throw Error('Autopilot needs a repository space; home spaces are not isolated projects')
+    if (!space || space.home || space.repos) throw Error('Autopilot needs a repository space; home and repos spaces are not isolated projects')
     const blocked = this.source.settings.pilotBlock(place)
     if (blocked) throw Error(blocked)
     if (this.busy(place) || this.source.pilots.completion?.busy(place)) throw Error('The coordinator is changing; try again shortly')

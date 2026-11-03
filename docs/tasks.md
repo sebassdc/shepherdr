@@ -167,7 +167,8 @@
   and the agent is told so. An agent that waits on you keeps its last line, frozen at its % (its minutes stop too);
   once it reports ready, or waits for a go or for other tasks, it has none.
 
-- New tasks capture their space's base branch when added. Use `shepherdr task add "Title" --brief "…"
+- New tasks capture their space's base branch when added (in a [repos space](spaces.md), the checked-out branch of
+  the repo named with `--repo`). Use `shepherdr task add "Title" --brief "…"
   --base feature/topic --space NAME` to choose another target for just that task. Its list, chat and
   `shepherdr task show ID` show the target before merging. With an origin remote the branch must exist there and is
   fetched before work starts; without origin a local branch is required. GitHub write access (or a non-GitHub

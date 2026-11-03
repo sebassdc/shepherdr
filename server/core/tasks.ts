@@ -2,7 +2,7 @@ import { age } from '../common/age.ts'
 import { findCoreSpace } from './space-names.ts'
 import { CoreError, Refusal } from './client.ts'
 import { createHash, randomUUID } from 'node:crypto'
-import { join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { readFileSync } from 'node:fs'
 import { SUMMARY_MAX, TITLE_MAX, STATUS_MAX, slugify, type Action, type MergeEvidence, type Question, type Task } from '../../shared/types.ts'
 import { CorePilotRepositories } from './pilot-repositories.ts'
@@ -25,7 +25,7 @@ import { FRESH_SESSION } from './failed-starts.ts'
 import { archiveAfterMs } from '../../shared/archive.ts'
 
 export interface CoreTaskInput {
-  title: string; brief: string; space?: string; base?: string; after?: string[]; later?: boolean
+  title: string; brief: string; space?: string; repo?: string; base?: string; after?: string[]; later?: boolean
   kind?: AgentKind; model?: string; effort?: string; reviewer?: AgentKind; reviewerModel?: string; reviewerEffort?: string
   settings?: Record<string, string>; automation?: string; pilot?: string
 }
@@ -178,9 +178,11 @@ export class CoreTasks {
     if (!input.title.trim() || input.title.length > TITLE_MAX) throw new Refusal(`Write a title of at most ${TITLE_MAX} characters`)
     if (!input.brief.trim()) throw new Refusal('Give the task its full brief')
     if (!this.source.space(space.id) || this.source.places?.removing(space.id) || space.home) throw new Refusal('Choose a repository space for the task')
+    const repo = await this.repoFor(space, input.repo)
+    const base = input.base || (space.repos ? await this.git.run({ machine: space.machine, folder: repo }, ['symbolic-ref', '--short', 'HEAD']).catch(() => { throw new Refusal(`${repo} has no branch checked out; set --base`) }) : space.base)
     const { id, localId, number } = reserveTaskId(this.source.store, space.machine, space.prefix, this.source.machineName(space.machine), space)
     const branch = `work/${number}-${slugify(input.title).slice(0, 40)}`
-    const folder = join(await (input.pilot ? this.source.agents.pilotWorktreeRoot(space.machine) : this.source.agents.worktreeRoot(space.machine)), space.name, branch.replaceAll('/', '-'))
+    const folder = join(await (input.pilot ? this.source.agents.pilotWorktreeRoot(space.machine) : this.source.agents.worktreeRoot(space.machine)), space.name, (space.repos ? `${basename(repo)}-` : '') + branch.replaceAll('/', '-'))
     if (!this.source.space(space.id) || this.source.places?.removing(space.id)) throw new Refusal('This space changed before task creation; retry after it is added again')
     const after = taskDependencies(this.all(), { id, place: space.id, machine: space.machine }, input.after ?? [], machine => this.source.machineName(machine))
       .filter(id => !['merged', 'closed'].includes(this.get(id)!.workflow))
@@ -196,7 +198,7 @@ export class CoreTasks {
       ...(input.reviewer ? { 'reviewer.agent': reviewer.kind } : {}), ...(input.reviewerModel !== undefined ? { 'reviewer.model': reviewer.model || 'default' } : {}), ...(input.reviewerEffort !== undefined ? { 'reviewer.effort': reviewer.effort || 'default' } : {}) }
     const merge = overrides['brief.merge'] ?? this.source.settings.get('brief.merge', space.id)
     const task: CoreTask = {
-      id, localId, launchAttempt: randomUUID(), pilot: input.pilot, automation: input.automation, name: input.title.trim(), desc: input.brief, place: space.id, machine: space.machine, folder, repo: space.folder, branch, base: input.base || space.base,
+      id, localId, launchAttempt: randomUUID(), pilot: input.pilot, automation: input.automation, name: input.title.trim(), desc: input.brief, place: space.id, machine: space.machine, folder, repo, branch, base,
       chat: `${id}/Agent`, kind: defaults.kind, model: defaults.model, effort: defaults.effort, workflow: after.length ? 'queued' : input.later ? 'todo' : 'working', status: after.length ? 'queued' : input.later ? 'todo' : 'work',
       reviewerModel: reviewer.model, reviewerEffort: reviewer.effort, mergePolicy: run?.config.approvals.includes('merge') || merge === 'ask me first' ? 'ask' : merge === 'after GitHub checks' ? 'checks' : 'auto', overrides, review: { on: (overrides['brief.review'] ?? this.source.settings.get('brief.review', space.id)) === 'on', kind: reviewer.kind, rounds: parseInt(overrides['review.rounds'] ?? this.source.settings.get('review.rounds', space.id)), mustFix: overrides['review.mustFix'] ?? this.source.settings.get('review.mustFix', space.id) }, after, age: 'now', created: new Date().toISOString(), on: CLI_NAME[defaults.kind], state: 'Working',
     }
@@ -207,12 +209,24 @@ export class CoreTasks {
       this.save(task) // Number and record survive a failed worktree/agent start; never reuse their branch number.
       try {
         await this.source.files.exec(space.machine, ['mkdir', '-p', join(folder, '..')])
-        await this.git.addWorktree({ machine: space.machine, folder: space.folder }, folder, branch, task.base!)
+        await this.git.addWorktree({ machine: space.machine, folder: repo }, folder, branch, task.base!)
         await this.launchNow(task, undefined, task.model, task.effort)
       } catch (error) { task.startError = (error as Error).message; task.workflow = 'todo'; delete task.reservedAt; this.save(task); throw new Refusal(`${task.id} was saved but could not start: ${task.startError}\nDo not add it again. Read task show ${task.id} before deciding its next step.`) }
       this.card(task, task.workflow === 'queued' ? task.capacity ? 'Queued: ' + task.capacity : 'Queued after ' + after.join(', ') : task.workflow === 'todo' ? 'Waiting for your go' : 'Started')
       return task
     })
+  }
+  /** A repos space's task works in the repo it names inside the space's folder; any other space's task in its folder. */
+  private async repoFor(space: CoreSpace, path?: string) {
+    if (!space.repos) { if (path !== undefined) throw new Refusal('--repo is only for a repos space'); return space.folder }
+    if (!path?.trim()) throw new Refusal(`${space.name} is a folder of repos: name the task's repo with --repo PATH, relative to ${space.folder}`)
+    let top: string
+    try { top = await this.git.run({ machine: space.machine, folder: resolve(space.folder, path) }, ['rev-parse', '--show-toplevel']) }
+    catch { throw new Refusal(`${path} is not a git repository in ${space.folder}`) }
+    if (!top.startsWith(space.folder + '/')) throw new Refusal(`${path} is not a repository inside ${space.folder}`)
+    try { await this.git.head({ machine: space.machine, folder: top }) }
+    catch { throw new Refusal(`${top} needs a first commit before a task can use it`) }
+    return top
   }
   async launch(task: CoreTask, message?: string, model = task.model, effort = task.effort) { return this.change(task.id, () => this.launchNow(task, message, model, effort)) }
   /** Explicit coordinator start. A stopped run never silently becomes an unrestricted worker. */
@@ -971,7 +985,7 @@ export class CoreTasks {
       const settings = taskOptions(parsed), agentName = one(parsed, 'agent'), reviewerName = one(parsed, 'reviewer')
       const kind = agentName === undefined ? undefined : kindOf(agentName), reviewer = reviewerName === undefined ? undefined : kindOf(reviewerName)
       if (agentName !== undefined && !kind || reviewerName !== undefined && !reviewer) throw new Refusal('Choose Claude Code or Codex')
-      const task = await this.add(grant, { title: rest.join(' '), brief: one(parsed, 'brief') ?? one(parsed, 'desc') ?? '', space: one(parsed, 'space'), base: one(parsed, 'base'),
+      const task = await this.add(grant, { title: rest.join(' '), brief: one(parsed, 'brief') ?? one(parsed, 'desc') ?? '', space: one(parsed, 'space'), repo: one(parsed, 'repo'), base: one(parsed, 'base'),
         after: one(parsed, 'after')?.split(',').filter(Boolean), later: parsed.flags.has('later'), kind, model: one(parsed, 'model'), effort: one(parsed, 'effort'), reviewer, reviewerModel: one(parsed, 'reviewer-model'), reviewerEffort: one(parsed, 'reviewer-effort'), settings })
       return text(`${task.id}: ${task.name}\nBranch: ${task.branch}\nWorktree: ${task.folder}\nCore terminal: ${this.source.agents.get(task.chat)?.terminal || 'starting'}`)
     }

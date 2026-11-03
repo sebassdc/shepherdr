@@ -133,7 +133,7 @@ export class CoreArtifacts {
     if (!space || run.machine !== agent.machine || task && task.pilot !== run.id) throw new Refusal('This artifact runtime does not belong to this run')
     const runtime = await this.source.agents.browserRuntime(agent.machine)
     const out = await this.source.files.exec(agent.machine, [runtime.bun, join(runtime.root, 'helper/core-pilot-artifact.ts')], undefined,
-      Buffer.from(JSON.stringify({ ...operation, captures: agent.pilot.captures, cwd: task?.folder ?? space.folder, repo: space.folder })))
+      Buffer.from(JSON.stringify({ ...operation, captures: agent.pilot.captures, cwd: task?.folder ?? space.folder, repo: task?.repo ?? space.folder })))
     this.source.pilots.policy.actor(agent.pilot.run, this.source.pilots.actor(agent))
     return out.toString('utf8')
   }

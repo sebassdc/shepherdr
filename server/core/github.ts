@@ -60,7 +60,7 @@ export class CoreGitHub {
       await this.merges.scan(now)
       await this.prs.scan(now)
       this.deliver()
-      const spaces = this.source.spaces().filter(space => !space.home && this.source.machineConnected(space.machine) && this.wanted(space, now))
+      const spaces = this.source.spaces().filter(space => !space.home && !space.repos && this.source.machineConnected(space.machine) && this.wanted(space, now))
         .sort((a, b) => (this.source.store.get<MainWatch>('github-main', this.key(a))?.checked ?? 0) - (this.source.store.get<MainWatch>('github-main', this.key(b))?.checked ?? 0))
       const visited = new Set<string>()
       let count = 0

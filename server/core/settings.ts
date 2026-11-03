@@ -244,6 +244,7 @@ export class CoreSettings {
     const space = this.spaces().find(item => item.id === level)
     if (!space) return undefined
     if (space.home) return "Autopilot needs a repository space. A home space can't run it."
+    if (space.repos) return "Autopilot needs a repository space. A repos space can't run it."
     const check = this.store.get<MachineCheck>('machine-check', space.machine), where = this.machineName(space.machine) || 'this machine'
     if (check?.platform && check.platform !== 'Linux') return `Autopilot needs Linux. ${where} runs ${check.platform === 'Darwin' ? 'macOS' : check.platform}.`
     if (check?.sandbox === 'missing') return `Autopilot needs bubblewrap, which is not installed on ${where}.`

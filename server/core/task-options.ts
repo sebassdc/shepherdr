@@ -5,7 +5,7 @@ const SETTINGS: Record<string, string> = { review: 'brief.review', 'brief.review
 export const mergeWords = (policy: 'ask' | 'checks' | 'auto') => policy === 'ask' ? 'ask the human first' : policy === 'checks' ? 'after GitHub checks' : 'on its own'
 /** Same one-task aliases and precedence as 2.0: repeated --set values override the corresponding flags. */
 export function taskOptions(parsed: Parsed) {
-  const allowed = ['brief', 'desc', 'space', 'base', 'after', 'later', 'agent', 'model', 'effort', 'reviewer', 'reviewer-model', 'reviewer-effort', 'set']
+  const allowed = ['brief', 'desc', 'space', 'repo', 'base', 'after', 'later', 'agent', 'model', 'effort', 'reviewer', 'reviewer-model', 'reviewer-effort', 'set']
   const unknown = [...Object.keys(parsed.opts), ...parsed.flags].find(name => !allowed.includes(name))
   if (unknown) throw new Refusal(`Task add takes no --${unknown}`)
   const bare = [...parsed.flags].find(name => name !== 'later')
