@@ -109,6 +109,12 @@ test('a GitHub approval counts only on the exact head, by someone else, with gre
   expect(approvalGaps(pr({ reviews: { nodes: [{ state: 'APPROVED', author: { login: 'reviewer' }, commit: { oid: old } }] } }), head).gaps).toEqual(['no approval on this exact commit by anyone but its author'])
   expect(approvalGaps(pr({ reviews: { nodes: [{ state: 'DISMISSED', author: { login: 'reviewer' }, commit: { oid: head } }] } }), head).approvers).toEqual([])
   expect(approvalGaps(pr({ reviews: { nodes: [{ state: 'APPROVED', author: { login: 'writer' }, commit: { oid: head } }, { state: 'APPROVED', author: null, commit: { oid: head } }] } }), head).approvers).toEqual([])
+  expect(approvalGaps(pr({ reviewDecision: null, reviews: { nodes: [{ state: 'APPROVED', author: { login: 'reviewer' }, commit: { oid: head } }, { state: 'CHANGES_REQUESTED', author: { login: 'reviewer' }, commit: { oid: head } }] } }), head).gaps)
+    .toEqual(['no approval on this exact commit by anyone but its author', 'changes requested by reviewer'])
+  expect(approvalGaps(pr({ reviewDecision: null, reviews: { nodes: [{ state: 'APPROVED', author: { login: 'reviewer' }, commit: { oid: head } }, { state: 'CHANGES_REQUESTED', author: { login: 'other' }, commit: { oid: old } }] } }), head).gaps)
+    .toEqual(['changes requested by other'])
+  expect(approvalGaps(pr({ reviews: { nodes: [{ state: 'CHANGES_REQUESTED', author: { login: 'reviewer' }, commit: { oid: old } }, { state: 'COMMENTED', author: { login: 'reviewer' }, commit: { oid: head } }, { state: 'APPROVED', author: { login: 'reviewer' }, commit: { oid: head } }] } }), head))
+    .toEqual({ gaps: [], approvers: ['reviewer'] })
   expect(approvalGaps(pr({ reviewThreads: { pageInfo: { hasNextPage: false }, nodes: [{ isResolved: false }] } }), head).gaps).toEqual(['1 unresolved review thread'])
   expect(approvalGaps(pr({ reviewDecision: 'CHANGES_REQUESTED' }), head).gaps).toEqual(["GitHub's review decision is changes requested"])
   const pending = pr(); pending.commits.nodes[0].commit.statusCheckRollup!.contexts.nodes[0] = { name: 'check', status: 'IN_PROGRESS', conclusion: null }

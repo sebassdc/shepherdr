@@ -48,8 +48,8 @@ build, check and review the work is your own judgment.
    brief and uses one of the Review rounds. Then end your turn: the report arrives in your chat as `<review round="…"
    head="…">`, and `ready` refuses until a report matches your commit. With a pull request, an approval on GitHub of
    that exact commit, its checks green and no review thread open, also counts once no review is running. Meanwhile
-   the task shows Working, "Waiting for review". `<review-failed>`: its partial words are no findings, run `shepherdr review` again. A reviewer that asks,
-   dies, stalls or ends with no report reaching you shows Needs you. The reviewer reports what this change
+   the task shows Working, "Waiting for review". `<review-failed>`: its partial words are no findings, run
+   `shepherdr review` again. A reviewer that asks, dies, stalls or ends with no report reaching you shows Needs you. The reviewer reports what this change
    broke, left undone or added beyond the brief, each with proof and tagged critical (breaks or loses users' work),
    major (a user would hit it, or it proves a claim false), minor (rarely hit) or trivial (style). Fix every finding at
    or above Must fix, then review again; stop once a round has none at or above it, or after Review rounds. Never agree

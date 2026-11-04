@@ -264,7 +264,7 @@ export class CoreTasks {
       if (prior && !this.source.agents.terminal(prior)) throw new Refusal('Previous task start is unconfirmed; reconnect before starting it again')
       task.after = taskDependencies(this.all(), task, task.after ?? [], machine => this.source.machineName(machine))
       task.workflow = task.after.some(id => !['merged', 'closed'].includes(this.get(id)?.workflow || '')) ? 'queued' : 'working'
-      delete task.startError; delete task.readyHead; delete task.approvedHead; delete task.mergeQuestion
+      delete task.startError; delete task.readyHead; delete task.reviewMet; delete task.approvedHead; delete task.mergeQuestion
       this.save(task)
       const room = this.source.health?.room(task.machine, task.id)
       if (room) { task.workflow = 'queued'; task.capacity = room; this.save(task); return task }
@@ -296,7 +296,7 @@ export class CoreTasks {
       task.kind = harness.kind; task.model = harness.model; task.effort = harness.effort
       task.review.kind = reviewer.kind; task.reviewerModel = reviewer.model; task.reviewerEffort = reviewer.effort
       if (run?.config.approvals.includes('merge')) task.mergePolicy = 'ask'
-      delete task.readyHead; delete task.approvedHead; delete task.mergeQuestion
+      delete task.readyHead; delete task.reviewMet; delete task.approvedHead; delete task.mergeQuestion
     }
   }
   private async finishForRestart(agent: import('./model.ts').CoreAgent) {
@@ -377,7 +377,7 @@ export class CoreTasks {
         const room = this.source.health?.room(task.machine, task.id)
         if (room) { task.capacity = room; if (['todo', 'queued'].includes(task.workflow)) task.workflow = 'queued'; this.save(task); throw new CoreError('busy', 'This message is saved until its machine has room') }
         task.reservedAt = Date.now(); task.reservedChats = [...new Set([...(task.reservedChats ?? []), chat])]
-        if (!internal && chat === task.chat && (task.workflow === 'ready' && !this.mergeAsked(task, human) || task.workflow === 'todo')) { task.workflow = 'working'; delete task.readyHead; delete task.approvedHead; delete task.mergeQuestion }
+        if (!internal && chat === task.chat && (task.workflow === 'ready' && !this.mergeAsked(task, human) || task.workflow === 'todo')) { task.workflow = 'working'; delete task.readyHead; delete task.reviewMet; delete task.approvedHead; delete task.mergeQuestion }
         if (task.workflow === 'queued' && task.capacity && !(task.after ?? []).some(id => !['merged', 'closed'].includes(this.get(id)?.workflow || ''))) task.workflow = 'working'
         delete task.capacity; this.save(task); await this.label(task)
       }
@@ -1112,7 +1112,7 @@ export class CoreTasks {
       const open = after.filter(id => !['merged', 'closed'].includes(this.get(id)!.workflow))
       const was = task.workflow
       task.after = after
-      delete task.readyHead; delete task.approvedHead; delete task.mergeQuestion
+      delete task.readyHead; delete task.reviewMet; delete task.approvedHead; delete task.mergeQuestion
       if (open.length) {
         task.workflow = 'queued'; delete task.capacity
         // A queued pause is delivered after the current native turn. Keep that

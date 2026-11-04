@@ -152,9 +152,14 @@ export function approvalGaps(pr: ApprovalRead | null | undefined, head: string) 
   if (!checks?.nodes.length) gaps.push('no checks reported on it')
   if (checks?.pageInfo.hasNextPage) gaps.push('over 100 checks, read them by hand')
   if (bad.length) gaps.push(`checks not green: ${bad.slice(0, 5).map(check => check.name || check.context).join(', ')}`)
-  const author = pr.author?.login
-  const approvers = [...new Set(pr.reviews.nodes.filter(review => review.state === 'APPROVED' && review.commit?.oid === head && review.author?.login && review.author.login !== author).map(review => review.author!.login))]
+  // Each reviewer's latest verdict is theirs (reviews come oldest first): a later request for changes or a dismissal
+  // withdraws an approval, even where the branch requires no review and GitHub's own decision stays empty.
+  const author = pr.author?.login, latest = new Map<string, (typeof pr.reviews.nodes)[number]>()
+  for (const review of pr.reviews.nodes) if (review.author?.login && ['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(review.state)) latest.set(review.author.login, review)
+  const approvers = [...latest].filter(([login, review]) => login !== author && review.state === 'APPROVED' && review.commit?.oid === head).map(([login]) => login)
+  const asking = [...latest].filter(([, review]) => review.state === 'CHANGES_REQUESTED').map(([login]) => login)
   if (!approvers.length) gaps.push('no approval on this exact commit by anyone but its author')
+  if (asking.length) gaps.push(`changes requested by ${asking.join(', ')}`)
   if (pr.reviewDecision === 'CHANGES_REQUESTED' || pr.reviewDecision === 'REVIEW_REQUIRED') gaps.push(`GitHub's review decision is ${pr.reviewDecision.toLowerCase().replace('_', ' ')}`)
   const open = pr.reviewThreads.nodes.filter(thread => !thread.isResolved).length
   if (pr.reviewThreads.pageInfo.hasNextPage) gaps.push('over 100 review threads, read them by hand')
