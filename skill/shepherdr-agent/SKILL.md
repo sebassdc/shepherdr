@@ -42,6 +42,7 @@ build, check and review the work is your own judgment.
    `ready`, and Shepherdr shows nothing you didn't report. Ask the human only what no experiment can settle: once, a
    card with your recommended choice first, then end your turn (a turn ended without `ready`, nothing running in
    the background and no review under way shows Needs you). Decide the rest yourself and list those decisions in the facts.
+   Resumed without that card's answer (settled in your chat): `shepherdr ask withdraw` first, or the task stays Needs you.
 3. **Review**, unless Review is off or the brief says none: fresh eyes that didn't write the change. Commit, then run
    `shepherdr review <id>`: it starts a read-only reviewer of the Reviewer setting on that exact commit, gives it the
    brief and uses one of the Review rounds. Then end your turn: the report arrives in your chat as `<review round="…"

@@ -229,7 +229,7 @@ export class CoreLogs {
         this.store.delete('pending-send', optimistic.id)
         return
       }
-      if (/^\s*<(?:hc|github|news|answer|review|review-failed|go|queue|restart|mode|heartbeat|shepherdr|artifact-sent|artifact-note|artifact-comment|browser-notes|browser|health)\b/.test(event.text)) return
+      if (/^\s*<(?:hc|github|news|answer|review|review-failed|go|queue|restart|mode|heartbeat|shepherdr|artifact-sent|artifact-note|artifact-comment|browser-notes|browser|health|withdrawn)\b/.test(event.text)) return
     }
     const message = { id: event.id, who: event.kind === 'user' ? 'you' as const : 'agent' as const, text: event.text, at: event.at, source: event.id } satisfies SavedMessage
     this.store.set(kind, event.id, message)

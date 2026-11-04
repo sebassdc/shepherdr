@@ -50,7 +50,7 @@ export class CorePilotCommands {
       if (!run.config.secrets.includes(words[2])) throw new Refusal('That secret is outside this run’s approved access profile; ask the human')
       return text(await this.source.secrets.cli(agent, args))
     }
-    if (command === 'ask' || command === 'plan') return text(`Asked: ${this.source.questions.create(grant, args)}`)
+    if (command === 'ask' || command === 'plan') return text(this.source.questions.cli(grant, args))
     if (command === 'alert') {
       this.source.requirePlugin('alerts')
       const id = randomUUID(), title = words.slice(1).join(' ')

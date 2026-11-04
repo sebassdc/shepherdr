@@ -16,13 +16,42 @@ export class CoreQuestions {
       if (row.chat !== chat || row.answered) continue
       const replaced = this.source.agents.get(chat)?.grant !== row.grant, done = this.source.tasks.finished(chat)
       if (!replaced && !done) continue
-      row.answered = true; row.question.sent = -1; row.question.said = replaced ? 'Session replaced; ask the agent for a fresh card' : 'The task is done'
-      row.question.closed = row.question.said
-      this.source.store.set('question', row.id, row)
-      this.source.post(chat, { id: row.id, who: 'agent', question: row.question, at: Date.now() })
-      this.source.forwardQuestion(chat, row.question, row.question.said, replaced ? 'Session replaced' : 'No longer waiting')
-      this.source.clearAlert(chat, row.question.said)
+      this.close(row, replaced ? 'Session replaced; ask the agent for a fresh card' : 'The task is done', replaced ? 'Session replaced' : 'No longer waiting')
     }
+  }
+  private close(row: SavedQuestion, said: string, outcome: string) {
+    row.answered = true; row.question.sent = -1; row.question.said = said; row.question.closed = said
+    this.source.store.set('question', row.id, row)
+    this.source.post(row.chat, { id: row.id, who: 'agent', question: row.question, at: Date.now() })
+    this.source.forwardQuestion(row.chat, row.question, said, outcome)
+    this.source.clearAlert(row.chat, said)
+  }
+  /** ask and plan, or ask withdraw [TASK|CARD] [--why TEXT]: close open ask and plan cards nobody needs answered any more. */
+  cli(grant: Grant, args: string[]) {
+    const p = parseArgs(args)
+    if (p.words[1] !== 'withdraw' || p.opts.choice || p.opts.step || p.flags.has('other')) return `Asked: ${this.create(grant, args)}`
+    return this.withdraw(grant, p.words[2], one(p, 'why'))
+  }
+  /** Only shepherdr ask and plan cards: a merge card, a permission or a secret box never goes this way. */
+  private withdraw(grant: Grant, target?: string, why?: string) {
+    const caller = this.source.agents.get(grant.chat)
+    if (!caller || caller.grant !== grant.id || caller.role === 'reviewer') throw new Refusal('This session cannot withdraw cards')
+    const card = target && this.source.store.get<SavedQuestion>('question', target)
+    const chat = !target ? grant.chat : card ? card.chat : this.source.tasks.resolve(grant, target)?.chat
+    if (!chat) throw new Refusal('No such task or card')
+    const task = this.source.tasks.forChat(chat)
+    const coordinator = caller.role === 'coordinator' && !!task && task.chat === chat && caller.space === task.place && caller.machine === task.machine
+    if (chat !== grant.chat && !coordinator) throw new Refusal('Only the agent that asked, or its space coordinator, withdraws a card')
+    const rows = this.open(chat).filter(row => !card || row.id === card.id)
+    if (!rows.length) return card ? 'That card is not open' : 'No open card to withdraw'
+    const said = why?.trim() || (chat === grant.chat ? 'Withdrawn: no longer needed' : 'Withdrawn by the coordinator')
+    for (const row of rows) {
+      this.close(row, said, 'Withdrawn')
+      // the asking agent may be waiting for this answer: tell it the card is gone
+      if (chat !== grant.chat) this.source.saveAndDeliver(chat, `withdrawn-${row.id}`, tag('withdrawn', { question: row.question.title }, said), () => {}, true)
+    }
+    this.source.emit('snapshot')
+    return `Withdrew ${rows.length} card${rows.length > 1 ? 's' : ''}: ${rows.map(row => row.question.title).join('; ')}`
   }
   create(grant: Grant, args: string[]) {
     const agent = this.source.agents.get(grant.chat)

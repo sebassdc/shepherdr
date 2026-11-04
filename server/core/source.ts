@@ -710,6 +710,7 @@ export class CoreSource extends Emitter<SourceEvents> implements Source {
   task review-more ID (coordinator only; one more review round once all are used)
   status ID TEXT --done 0..100 --left 5m|1h20m
   ask TITLE --choice LABEL --choice LABEL | plan [ID] --title TITLE --step TEXT --step TEXT
+  ask withdraw [TASK|CARD] [--why TEXT] (a moot ask or plan card: yours, or a coordinator's for its space's task)
   review ID | pr ID | checks ID [--comments [--offset N] [--from nextFrom]]
   ready ID --summary TEXT [--facts TEXT]
   merge ID (follows the task's Merge setting; only "ask the human first" needs their yes on its card)
@@ -739,7 +740,7 @@ Use hc for starting, messaging and waiting on core child agents. Never use a web
       if (args[0] === 'automation') return { out: await this.automations.cli(agent, args) + '\n', code: 0 }
       const common = await new CoreCommands(this).cli(agent, grant, args)
       if (common) return common
-      if (args[0] === 'ask' || args[0] === 'plan') return { out: `Asked: ${this.questions.create(grant, args)}\n`, code: 0 }
+      if (args[0] === 'ask' || args[0] === 'plan') return { out: `${this.questions.cli(grant, args)}\n`, code: 0 }
       if (args[0] === 'space') return { out: await this.places.cli(agent, args) + '\n', code: 0 }
       return this.tasks.cli(grant, args)
     }

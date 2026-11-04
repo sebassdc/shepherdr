@@ -46,6 +46,9 @@
   Asks permission, Signed out, Question for you, Waits for your reply), or the agent's own question cut to fit
   (from its question tool, its choice card, or the last sentence of its last message that asks). The tasks list, the
   row in its space's chat, alerts and coordinator news all say the same; the full message stays in the task's chat.
+- A `shepherdr ask` or `plan` card waits until you answer it, or until the agent that asked or its space's coordinator
+  withdraws it with `shepherdr ask withdraw` once it is moot; the card then shows Withdrawn and the task its real state.
+  A progress report from an agent with a card still open says so. Merge cards and permissions are never withdrawn.
 - A permission, question or plan card from the CLI lasts only as long as the CLI waits on it. Its own records say when
   that is over: the tool call's result or the turn's end, on Claude Code and Codex alike, and the hook the CLI stops
   when its prompt is declined. The card then closes with what happened (Answered in the terminal, Timed out in the CLI

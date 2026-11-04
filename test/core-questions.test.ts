@@ -45,3 +45,35 @@ test('a queued answer never launches a replacement for a finished session', asyn
     expect(source.chat('chat')?.messages.find(message => message.id === 'delivery-answer-one')?.text).toContain('could not confirm delivery')
   } finally { source.stop(); await Promise.resolve(); source.mailbox.close(); source.store.close(); rmSync(home, { recursive: true, force: true }) }
 })
+
+test('a moot card is withdrawn by its own agent or its space coordinator, and the task stops needing you', () => {
+  const home = mkdtempSync(join(tmpdir(), 'shep-withdraw-'))
+  const source = new CoreSource({ home, port: 17887, socket: '/unused', session: 'test', binary: 'hc' })
+  try {
+    const space = (id: string) => source.store.set('space', id, { id, name: id, machine: 'machine', folder: `/${id}`, base: 'main', prefix: id.toUpperCase(), mode: 'regular', added: 1 } satisfies CoreSpace)
+    const agent = (chat: string, place: string, role: CoreAgent['role']) => source.store.set('agent', chat, { chat, space: place, machine: 'machine', role, kind: 'claude', launch: chat, grant: chat, hook: '/unused', state: 'idle', started: 1 } satisfies CoreAgent)
+    space('one'); space('two'); agent('one', 'one', 'coordinator'); agent('two', 'two', 'coordinator'); agent('ONE-1/Agent', 'one', 'task')
+    source.store.set('task', 'ONE-1', { id: 'ONE-1', chat: 'ONE-1/Agent', place: 'one', machine: 'machine', name: 'Example', folder: '/unused', workflow: 'working', review: { on: false }, age: 'now', created: new Date().toISOString(), kind: 'claude' })
+    const grant = (chat: string) => ({ chat, id: chat }) as Grant
+    const asked = () => source.questions.cli(grant('ONE-1/Agent'), ['ask', 'Rerun CI?', '--choice', 'Yes']).replace('Asked: ', '')
+    // a question that starts with the word withdraw is still a question
+    expect(source.questions.cli(grant('one'), ['ask', 'withdraw', 'the', 'PR?', '--choice', 'Yes'])).toStartWith('Asked: ')
+    expect(source.questions.cli(grant('one'), ['ask', 'withdraw'])).toStartWith('Withdrew 1 card')
+
+    const first = asked()
+    expect(source.questions.open('ONE-1/Agent')).toHaveLength(1)
+    expect(() => source.questions.cli(grant('two'), ['ask', 'withdraw', 'ONE-1'])).toThrow('Only the agent that asked')
+    expect(() => source.questions.cli(grant('two'), ['ask', 'withdraw', first])).toThrow('Only the agent that asked')
+    expect(source.questions.cli(grant('one'), ['ask', 'withdraw', 'ONE-1', '--why', 'Answered in chat'])).toBe('Withdrew 1 card: Rerun CI?')
+    expect(source.questions.open('ONE-1/Agent')).toHaveLength(0)
+    expect(source.store.get<{ question: { sent: number; closed: string } }>('question', first)?.question).toMatchObject({ sent: -1, closed: 'Answered in chat' })
+    // the agent that waited for this answer hears that the card is gone
+    expect(source.store.get('pending-send', `withdrawn-${first}`)).toMatchObject({ chat: 'ONE-1/Agent', state: 'queued' })
+    expect(source.questions.cli(grant('one'), ['ask', 'withdraw', first])).toBe('That card is not open')
+
+    const second = asked()
+    expect(source.questions.cli(grant('ONE-1/Agent'), ['ask', 'withdraw'])).toBe('Withdrew 1 card: Rerun CI?')
+    expect(source.store.get('pending-send', `withdrawn-${second}`)).toBeUndefined()
+    expect(source.questions.cli(grant('ONE-1/Agent'), ['ask', 'withdraw'])).toBe('No open card to withdraw')
+  } finally { source.stop(); source.mailbox.close(); source.store.close(); rmSync(home, { recursive: true, force: true }) }
+})

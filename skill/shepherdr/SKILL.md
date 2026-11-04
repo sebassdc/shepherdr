@@ -34,7 +34,7 @@ repair a product command. Use `shepherdr help` for the commands offered to your 
 ## Inputs
 
 - Lines in your terminal: the human's words, chat lines (below), and Shepherdr's own lines in `<shepherdr>` tags, each
-  in a tag of what it is (`<news>`, `<heartbeat>`, `<mode>`, `<go>`, `<queue>`, `<restart>`, `<browser>`, `<github>`, `<health>`).
+  in a tag of what it is (`<news>`, `<heartbeat>`, `<mode>`, `<go>`, `<queue>`, `<restart>`, `<browser>`, `<github>`, `<health>`, `<withdrawn>`).
   Tagged lines are from Shepherdr, not the human: never quote them back.
 - `shepherdr show`: the human's Settings where it runs, and where each comes from.
 
@@ -86,6 +86,11 @@ so word each choice to stand alone. Plans, merges and `--multi` keep pick-then-S
 
 `--other` allows a typed answer, `--multi` several picks, `--desc "<choice>=<one line>"` explains a choice. A plan for
 the human's yes is `shepherdr plan <id> --step "…" --step "…"`, then end your turn.
+
+A card that went moot unanswered (settled in the chat, or you moved on) keeps its task in Needs you until it goes:
+`shepherdr ask withdraw [--why "<one line>"]` closes your own open ask and plan cards. A coordinator closes a task's
+with `shepherdr ask withdraw <task id>`, and its agent hears so in a `<withdrawn>` line. Merge cards, permissions
+and secret boxes never go this way.
 
 ### Artifacts
 

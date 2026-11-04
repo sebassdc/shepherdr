@@ -643,7 +643,8 @@ export class CoreTasks {
     const task = this.get(id)
     if (!task) throw new Refusal('No such task')
     this.assert(grant, task)
-    if (message.length > STATUS_MAX || !Number.isFinite(progress) || progress < 0 || progress > 100) throw new Refusal('Invalid progress report')
+    if (message.length > STATUS_MAX) throw new Refusal(`Keep the status text to ${STATUS_MAX} characters; this one has ${message.length}`)
+    if (!Number.isFinite(progress) || progress < 0 || progress > 100) throw new Refusal('Give --done a number from 0 to 100')
     task.report = { msg: message, progress, eta }; task.reportedAt = Date.now(); this.save(task)
   }
   async act(action: Action): Promise<unknown> {
@@ -1047,7 +1048,8 @@ export class CoreTasks {
       const left = one(parsed, 'left'), match = left?.match(/^(?:(\d+)h)?(?:(\d+)m)?$/)
       if (left && (!match || !match[1] && !match[2])) throw new Refusal('Use a time such as 5m or 1h20m')
       await this.report(grant, id, parsed.words.slice(2).join(' '), Number(one(parsed, 'done') ?? 0), match ? Number(match[1] || 0) * 60 + Number(match[2] || 0) : undefined)
-      return text('Progress recorded')
+      const open = grant.chat === task.chat ? this.source.questions.open(task.chat) : []
+      return text(open.length ? `Progress recorded. Your card "${open.at(-1)!.question.title}" is still open, so ${id} shows Needs you; if it is moot, run ask withdraw` : 'Progress recorded')
     }
     if (verb === 'ready' || verb === 'done') {
       const summary = summaryOpts(parsed, rest)
