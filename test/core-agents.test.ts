@@ -173,17 +173,18 @@ for (const kind of ['claude', 'codex'] as const) test(`${kind} coordinator launc
 
 function herdrFixture(herdrApp: boolean) {
   const home = mkdtempSync(join(tmpdir(), 'shep-herdr-app-')), store = new CoreStore(home)
-  const terminals = new Map<string, import('../server/core/protocol.ts').CoreTerminal>(), kills: string[] = []
+  const terminals = new Map<string, import('../server/core/protocol.ts').CoreTerminal>(), kills: string[] = [], labeled: string[] = []
   let count = 0
   const core = { current: { terminals }, call: async (method: string, input: { labels: Record<string, string>; terminal: string }) => {
     if (method === 'terminal.kill') { kills.push(input.terminal); return {} }
+    if (method === 'terminal.label') { labeled.push(input.terminal); Object.assign(terminals.get(input.terminal)!.labels, input.labels); return {} }
     const address = `t${++count}`, terminal = { address, labels: input.labels, pid: count * 10, state: 'live', created_ms: count } as import('../server/core/protocol.ts').CoreTerminal
     terminals.set(address, terminal); return terminal
   } } as unknown as CoreSession
   const mailbox = { issue: () => ({ id: `grant-${count}`, credential: {} }) } as unknown as Mailbox
   const agents = new CoreAgents({ home, port: 0, session: 'default', socket: '/unused', binary: 'hc', herdrApp }, { format: 'shepherdr-core', schema: 1, id: 'installation' }, core, store, mailbox, async () => undefined, () => {})
   const space = { id: 'space', name: 'Example', machine: 'machine', folder: '/unused', base: 'main', prefix: 'EX', mode: 'regular' as const, added: 1 }
-  return { agents, terminals, kills, space, close() { store.close(); rmSync(home, { recursive: true, force: true }) } }
+  return { agents, terminals, kills, labeled, space, close() { store.close(); rmSync(home, { recursive: true, force: true }) } }
 }
 const herdrId = (prefix: string, key: string) => prefix + createHash('sha256').update(`installation:${key}`).digest('hex').slice(0, 32)
 
@@ -203,6 +204,27 @@ test('with --herdr-app a coordinator gets its own app space and tab, a task agen
     const again = await f.agents.launch(f.space, 'space', 'claude', 'Wait', { resume: true })
     expect(again.terminal).not.toBe(coordinator.terminal)
     expect(labels(again)).toMatchObject({ 'herdr.space': labels(coordinator)['herdr.space'], 'herdr.tab': labels(coordinator)['herdr.tab'] })
+  } finally { f.close() }
+})
+
+for (const herdrApp of [true, false]) test(`agents started before --herdr-app ${herdrApp ? 'get their app ids once' : 'stay unlabeled without it'}`, async () => {
+  const f = herdrFixture(herdrApp)
+  try {
+    const coordinator = await f.agents.launch(f.space, 'space', 'claude', 'Wait')
+    const task = await f.agents.launch(f.space, 'EX-1/Agent', 'claude', 'Wait', { role: 'task', task: 'EX-1', parent: coordinator })
+    const reviewer = await f.agents.launch(f.space, 'EX-1/Reviewer-1', 'claude', 'Review', { role: 'reviewer', task: 'EX-1', parent: task, readOnly: true })
+    const other = await f.agents.launch(f.space, 'EX-2/Agent', 'claude', 'Wait', { role: 'task', task: 'EX-2', parent: coordinator })
+    const labels = (agent: CoreAgent) => f.terminals.get(agent.terminal!)!.labels
+    // As launched before the flag: no app ids. One terminal now belongs to another installation.
+    for (const agent of [coordinator, task, reviewer, other]) { delete labels(agent)['herdr.space']; delete labels(agent)['herdr.tab'] }
+    labels(other)['shepherdr.installation'] = 'elsewhere'
+    f.agents.reconcile(); await Bun.sleep(0); f.agents.reconcile()
+    if (!herdrApp) { expect(f.labeled).toEqual([]); return }
+    expect(f.labeled).toEqual([coordinator.terminal!, task.terminal!])
+    expect(labels(coordinator)).toMatchObject({ 'herdr.space': herdrId('sp', 'space'), 'herdr.tab': herdrId('tb', 'space:coordinator') })
+    expect(labels(task)).toMatchObject({ 'herdr.space': herdrId('sp', 'space'), 'herdr.tab': herdrId('tb', 'EX-1') })
+    expect(labels(reviewer)['herdr.space']).toBeUndefined()
+    expect(labels(other)['herdr.space']).toBeUndefined()
   } finally { f.close() }
 })
 

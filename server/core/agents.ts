@@ -73,15 +73,23 @@ export class CoreAgents {
   private kept(agent: CoreAgent, terminal: CoreTerminal) { return !!this.config.herdrApp && agent.pid !== undefined && terminal.pid != null && terminal.pid !== agent.pid }
   private ending = new Set<string>()
   /** Herdr app ids: a coordinator gets its space and a tab, a task's agent a tab there; others stay its sub-agents. */
-  private herdrLabels(space: CoreSpace, chat: string, role: CoreAgent['role'], task?: string): Record<string, string> {
-    const tab = role === 'coordinator' && chat === space.id ? `${space.id}:coordinator` : role === 'task' && task && chat === `${task}/Agent` ? task : undefined
+  private herdrLabels(space: string, chat: string, role: CoreAgent['role'], task?: string): Record<string, string> {
+    const tab = role === 'coordinator' && chat === space ? `${space}:coordinator` : role === 'task' && task && chat === `${task}/Agent` ? task : undefined
     if (!this.config.herdrApp || !tab) return {}
     const id = (prefix: string, key: string) => prefix + createHash('sha256').update(`${this.installation.id}:${key}`).digest('hex').slice(0, 32)
-    return { 'herdr.space': id('sp', space.id), 'herdr.tab': id('tb', tab) }
+    return { 'herdr.space': id('sp', space), 'herdr.tab': id('tb', tab) }
   }
+  private labeled = new Set<string>()
   reconcile() {
     for (const agent of this.all()) {
       const found = this.found(agent), key = found && `${found.address}:${found.pid}`
+      // Agents started before --herdr-app lack the app ids, so the app never adopted them: add them once.
+      const missing = found?.state === 'live' && !this.kept(agent, found) && !found.labels['herdr.space'] && !found.labels['herdr.tab'] && !this.labeled.has(key!)
+        ? this.herdrLabels(agent.space, agent.chat, agent.role, found.labels['shepherdr.task']) : {}
+      if (missing['herdr.space']) {
+        this.labeled.add(key!)
+        void this.core.call('terminal.label', { terminal: found!.address, labels: missing }).catch(() => this.labeled.delete(key!))
+      }
       // A kept shell would stay an app tab beside the restarted agent; with keep, a kill is final.
       if (found?.state === 'live' && found.address === agent.terminal && this.kept(agent, found) && !this.ending.has(key!)) {
         this.ending.add(key!)
@@ -217,7 +225,7 @@ export class CoreAgents {
       labels: {
         'shepherdr.installation': this.installation.id, 'shepherdr.space': space.id, 'shepherdr.role': role,
         'shepherdr.chat': chat, 'shepherdr.task': options.task ?? '', 'shepherdr.state': 'working', 'shepherdr.launch': launch,
-        ...this.herdrLabels(space, chat, role, options.task),
+        ...this.herdrLabels(space.id, chat, role, options.task),
       },
       env: { SHEPHERDR_CHAT: '', SHEPHERDR_SECRET_FILE: '', SHEPHERDR_URL: '',
         ...shellEnv, SHEPHERDR_CORE_HOOK_FILE: hook },
