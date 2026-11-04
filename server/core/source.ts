@@ -708,7 +708,7 @@ export class CoreSource extends Emitter<SourceEvents> implements Source {
   task pause|pin|unpin|unarchive ID (coordinator only, when the human asks)
   task close|delete ID [--force] (coordinator only; force may discard held work on delete)
   task review-more ID (coordinator only; one more review round once all are used)
-  status ID TEXT --done 0..100 --left 5m|1h20m
+  status ID TEXT (at most 40 characters) --done 0..100 --left 5m|1h20m
   ask TITLE --choice LABEL --choice LABEL | plan [ID] --title TITLE --step TEXT --step TEXT
   ask withdraw [TASK|CARD] [--why TEXT] (a moot ask or plan card: yours, or a coordinator's for its space's task)
   review ID | pr ID | checks ID [--comments [--offset N] [--from nextFrom]]
