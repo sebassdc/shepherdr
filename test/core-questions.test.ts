@@ -54,7 +54,7 @@ test('a moot card is withdrawn by its own agent or its space coordinator, and th
     const agent = (chat: string, place: string, role: CoreAgent['role']) => source.store.set('agent', chat, { chat, space: place, machine: 'machine', role, kind: 'claude', launch: chat, grant: chat, hook: '/unused', state: 'idle', started: 1 } satisfies CoreAgent)
     space('one'); space('two'); agent('one', 'one', 'coordinator'); agent('two', 'two', 'coordinator'); agent('ONE-1/Agent', 'one', 'task')
     source.store.set('task', 'ONE-1', { id: 'ONE-1', chat: 'ONE-1/Agent', place: 'one', machine: 'machine', name: 'Example', folder: '/unused', workflow: 'working', review: { on: false }, age: 'now', created: new Date().toISOString(), kind: 'claude' })
-    const grant = (chat: string) => ({ chat, id: chat }) as Grant
+    const grant = (chat: string) => ({ chat, id: chat, session: chat, machine: 'machine' }) as Grant
     const asked = () => source.questions.cli(grant('ONE-1/Agent'), ['ask', 'Rerun CI?', '--choice', 'Yes']).replace('Asked: ', '')
     // a question that starts with the word withdraw is still a question
     expect(source.questions.cli(grant('one'), ['ask', 'withdraw', 'the', 'PR?', '--choice', 'Yes'])).toStartWith('Asked: ')
