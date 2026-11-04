@@ -205,10 +205,17 @@ test('an ended reviewer has its records read at once, not in its turn among ever
     const head = Bun.spawnSync(['git', 'rev-parse', 'HEAD'], { cwd: worktree }).stdout.toString().trim()
     source.store.set('task', task.id, { ...tasks.get(task.id)!, review: { ...task.review, on: true }, reviewHead: head })
     await expect(tasks.ready(grant, task.id, 'Changed example')).rejects.toThrow('on its way to your chat')
+    await expect(tasks.review(grant, task.id)).rejects.toThrow('on its way to your chat')
     source.store.set(`event:${chat}`, 'turn', { kind: 'turn-end', id: 'turn', at: 300 })
     await tasks.tick()
     expect(read).toEqual([chat]) // Its end is in: nothing more to fetch.
     expect(tasks.get(task.id)?.reviewFailure).toBeUndefined()
+    // A report that never comes stops holding the agent back once the relay window has passed.
+    source.store.delete(`event:${chat}`, 'turn')
+    ;(tasks as unknown as { reviewEnds: Map<string, number> }).reviewEnds.set('review-launch', Date.now() - 3 * 60000)
+    await tasks.tick()
+    expect(read).toEqual([chat])
+    await expect(tasks.ready(grant, task.id, 'Changed example')).rejects.toThrow('Complete a fresh review')
   })
 })
 

@@ -90,6 +90,7 @@ export interface CoreTask extends Task {
 const REVIEW_LINE = 'Waiting for review'
 const REVIEW_QUIET = 20 * 60000 // As long as a task may stay quiet before its stalled news.
 const REVIEW_RELAY = 2 * 60000 // A finished reviewer's report reaches the agent within a few polls.
+const RELAYING = 'The review of this exact commit has ended and its report is on its way to your chat as a <review> line. Wait for it, then report ready again; do not start another review.'
 
 /** Workflow is explicit persisted metadata, mirrored to core labels. It is never inferred from process exit. */
 export class CoreTasks {
@@ -470,9 +471,7 @@ export class CoreTasks {
       this.save(task); await this.label(task); this.card(task, `Done: ${summary}`)
       return task
     }
-    // An ended review of this commit is only being relayed: another round would drop its report.
-    const relaying = task.review.on && !task.reviewTurn && task.reviewHead === task.readyHead && task.reviewChat && this.source.agents.get(task.reviewChat)
-    if (relaying && task.reviewFailure !== relaying.launch && this.source.agents.terminal(relaying)?.state === 'finished') throw new Refusal('The review of this exact commit has ended and its report is on its way to your chat as a <review> line. Wait for it, then report ready again; do not start another review.')
+    if (task.reviewHead === task.readyHead && this.relaying(task)) throw new Refusal(RELAYING)
     if (task.review.on && (!task.reviewReport || !task.reviewTurn || task.reviewHead !== task.readyHead)) throw new Refusal(`Complete a fresh review of this exact commit before reporting ready${this.roundsLeft(task) || this.reviewRunning(task) ? '' : `. ${this.roundsUsed(task)}`}`)
     if (task.pr) {
       const location = { machine: task.machine, folder: task.folder }, remote = await this.git.remote(location)
@@ -819,6 +818,16 @@ export class CoreTasks {
     this.source.store.delete('task', task.id); this.source.emit('snapshot')
     return { ok: true, stopped: true }
   }
+  /** When a tick first saw each reviewer end; its report should reach the agent within REVIEW_RELAY of that. */
+  private reviewEnds = new Map<string, number>()
+  /** A clean review end not yet relayed, within its relay window: another round now would drop its report. */
+  private relaying(task: CoreTask, now = Date.now()) {
+    const reviewer = task.review.on && task.reviewChat && !task.reviewTurn ? this.source.agents.get(task.reviewChat) : undefined
+    const terminal = reviewer && this.source.agents.terminal(reviewer)
+    if (!reviewer || task.reviewFailure === reviewer.launch || terminal?.state !== 'finished' || terminal.exit_code !== 0) return false
+    if (!this.reviewEnds.has(reviewer.launch)) this.reviewEnds.set(reviewer.launch, now)
+    return now - this.reviewEnds.get(reviewer.launch)! < REVIEW_RELAY
+  }
   private roundsLeft(task: CoreTask) { return task.review.rounds - (task.reviewRound ?? 0) }
   private roundsUsed(task: CoreTask) { return `All ${task.review.rounds} review rounds are used. If a commit still needs a review, say why in your chat and end your turn: only your coordinator can add a round (shepherdr task review-more ${task.id})` }
   /** One more round past the setting. The limit stops an agent reviewing for ever, so its own agent can never raise it. */
@@ -842,6 +851,7 @@ export class CoreTasks {
     this.assert(grant, task)
     if (!task.review.on) throw new Refusal('Review is off for this task')
     if (!this.roundsLeft(task)) throw new Refusal(this.roundsUsed(task))
+    if (this.relaying(task) && await this.git.head({ machine: task.machine, folder: task.folder }) === task.reviewHead) throw new Refusal(RELAYING)
     const round = (task.reviewRound ?? 0) + 1
     const parent = this.source.agents.get(task.chat), space = this.source.space(task.place)
     if (!parent || !space) throw new Refusal('The task agent must be running before its reviewer starts')
@@ -889,7 +899,7 @@ export class CoreTasks {
           const terminal = reviewer && this.source.agents.terminal(reviewer)
           const completed = reviewer?.transcriptFormat !== 'codex-exec' || terminal?.state === 'finished' && terminal.exit_code === 0
           // Its report is in records the log poll reaches only in its turn among every agent: read them now it has ended.
-          if (reviewer && terminal?.state === 'finished' && !end && task.reviewFailure !== reviewer.launch) this.source.logs.readNow(task.reviewChat)
+          if (!end && this.relaying(task)) this.source.logs.readNow(task.reviewChat)
           if (reviewer && task.reviewFailure !== reviewer.launch && (end?.kind === 'turn-end' && end.aborted || (reviewer.transcriptFormat === 'codex-exec' || !end) && terminal?.state === 'finished' && terminal.exit_code !== 0)) {
             this.source.saveAndDeliver(task.chat, `review-failed-${reviewer.launch}`, '<review-failed>The reviewer stopped without a successful report. Do not treat its partial words as findings or report ready; request another fresh review.</review-failed>', () => {
               task.reviewFailure = reviewer.launch; this.source.store.set('task', task.id, task)
