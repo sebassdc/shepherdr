@@ -29,7 +29,7 @@ export class CoreQuestions {
   /** ask and plan, or ask withdraw [TASK|CARD] [--why TEXT]: close open ask and plan cards nobody needs answered any more. */
   cli(grant: Grant, args: string[]) {
     const p = parseArgs(args)
-    if (p.words[1] !== 'withdraw' || p.opts.choice || p.opts.step || p.flags.has('other')) return `Asked: ${this.create(grant, args)}`
+    if (p.words[0] !== 'ask' || p.words[1] !== 'withdraw' || p.opts.choice || p.opts.step || p.flags.has('other')) return `Asked: ${this.create(grant, args)}`
     return this.withdraw(grant, p.words[2], one(p, 'why'))
   }
   /** Only shepherdr ask and plan cards: a merge card, a permission or a secret box never goes this way. */
@@ -44,7 +44,7 @@ export class CoreQuestions {
     if (chat !== grant.chat && !coordinator) throw new Refusal('Only the agent that asked, or its space coordinator, withdraws a card')
     const rows = this.open(chat).filter(row => !card || row.id === card.id)
     if (!rows.length) return card ? 'That card is not open' : 'No open card to withdraw'
-    const said = why?.trim() || (chat === grant.chat ? 'Withdrawn: no longer needed' : 'Withdrawn by the coordinator')
+    const said = `Withdrawn${chat === grant.chat ? '' : ' by the coordinator'}: ${why?.trim() || 'no longer needed'}`
     for (const row of rows) {
       this.close(row, said, 'Withdrawn')
       // the asking agent may be waiting for this answer: tell it the card is gone

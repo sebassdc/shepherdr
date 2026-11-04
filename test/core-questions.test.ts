@@ -66,7 +66,7 @@ test('a moot card is withdrawn by its own agent or its space coordinator, and th
     expect(() => source.questions.cli(grant('two'), ['ask', 'withdraw', first])).toThrow('Only the agent that asked')
     expect(source.questions.cli(grant('one'), ['ask', 'withdraw', 'ONE-1', '--why', 'Answered in chat'])).toBe('Withdrew 1 card: Rerun CI?')
     expect(source.questions.open('ONE-1/Agent')).toHaveLength(0)
-    expect(source.store.get<{ question: { sent: number; closed: string } }>('question', first)?.question).toMatchObject({ sent: -1, closed: 'Answered in chat' })
+    expect(source.store.get<{ question: { sent: number; closed: string } }>('question', first)?.question).toMatchObject({ sent: -1, closed: 'Withdrawn by the coordinator: Answered in chat' })
     // the agent that waited for this answer hears that the card is gone
     expect(source.store.get('pending-send', `withdrawn-${first}`)).toMatchObject({ chat: 'ONE-1/Agent', state: 'queued' })
     expect(source.questions.cli(grant('one'), ['ask', 'withdraw', first])).toBe('That card is not open')
