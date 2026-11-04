@@ -49,7 +49,7 @@ export class CoreQuestions {
     for (const row of rows) {
       this.close(row, said, 'Withdrawn')
       // the asking agent may be waiting for this answer: tell it the card is gone
-      if (chat !== grant.chat) this.source.saveAndDeliver(chat, `withdrawn-${row.id}`, tag('withdrawn', { question: row.question.title }, said), () => {}, true)
+      if (chat !== grant.chat) this.source.saveAndDeliver(chat, `withdrawn-${row.id}`, tag('withdrawn', { question: row.question.title }, said.replaceAll('<', '\\u003c')), () => {}, true)
     }
     this.source.emit('snapshot')
     return `Withdrew ${rows.length} card${rows.length > 1 ? 's' : ''}: ${rows.map(row => row.question.title).join('; ')}`
