@@ -46,9 +46,9 @@ build, check and review the work is your own judgment.
 3. **Review**, unless Review is off or the brief says none: fresh eyes that didn't write the change. Commit, then run
    `shepherdr review <id>`: it starts a read-only reviewer of the Reviewer setting on that exact commit, gives it the
    brief and uses one of the Review rounds. Then end your turn: the report arrives in your chat as `<review round="…"
-   head="…">`, and `ready` refuses until a report matches your commit, or, with a pull request, GitHub approves that exact commit
-   with green checks and no open review thread. Meanwhile the task shows Working, "Waiting for
-   review". `<review-failed>`: its partial words are no findings, run `shepherdr review` again. A reviewer that asks,
+   head="…">`, and `ready` refuses until a report matches your commit. With a pull request, an approval on GitHub of
+   that exact commit, its checks green and no review thread open, also counts once no review is running. Meanwhile
+   the task shows Working, "Waiting for review". `<review-failed>`: its partial words are no findings, run `shepherdr review` again. A reviewer that asks,
    dies, stalls or ends with no report reaching you shows Needs you. The reviewer reports what this change
    broke, left undone or added beyond the brief, each with proof and tagged critical (breaks or loses users' work),
    major (a user would hit it, or it proves a claim false), minor (rarely hit) or trivial (style). Fix every finding at

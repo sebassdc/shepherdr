@@ -821,7 +821,7 @@ test('with its rounds used, a task reports ready on a GitHub approval of its exa
   source.store.set('task', task.id, { ...tasks.get(task.id)!, pr: { number: 7, url: 'https://github.test/o/r/pull/7' } })
   tasks.git.remote = async () => 'github.test/o/r'
   tasks.git.ghRun = async () => ''
-  tasks.git.pullRequest = async () => ({ number: 7, url: 'https://github.test/o/r/pull/7', state: 'OPEN', isDraft: false, headRefOid: head, baseRefName: task.base, statusCheckRollup: [] })
+  tasks.git.pullRequest = async () => ({ number: 7, url: 'https://github.test/o/r/pull/7', state: 'OPEN', isDraft: false, headRefOid: head, baseRefName: task.base, statusCheckRollup: [{ conclusion: 'SUCCESS' }] })
   let asked = ''
   tasks.git.approval = async (_repo, _remote, _number, at) => { asked = at; return { gaps: ['1 unresolved review thread'], approvers: [] } }
   await expect(tasks.ready(grant, task.id, 'Changed the sample')).rejects.toThrow('approval on GitHub of this exact commit (1 unresolved review thread)')
@@ -830,6 +830,10 @@ test('with its rounds used, a task reports ready on a GitHub approval of its exa
   tasks.git.approval = async () => ({ gaps: [], approvers: ['reviewer'] })
   const result = await tasks.cli(grant, ['ready', task.id, '--summary', 'Changed the sample'])
   expect(result.out).toContain(`Review: GitHub approval of ${head.slice(0, 7)} by reviewer`)
+  expect(tasks.get(task.id)?.workflow).toBe('ready')
+  // A dismissed approval or a new thread after ready stops the merge that approval allowed.
+  tasks.git.approval = async () => ({ gaps: ['no approval on this exact commit by anyone but its author'], approvers: [] })
+  await expect(tasks.merge(grant, task.id)).rejects.toThrow("GitHub's approval no longer meets the review rule")
   expect(tasks.get(task.id)?.workflow).toBe('ready')
 }))
 

@@ -474,7 +474,7 @@ export class CoreTasks {
       return task
     }
     if (task.reviewHead === task.readyHead && this.relaying(task)) throw new Refusal(RELAYING)
-    const reviewed = !task.review.on || !!task.reviewReport && !!task.reviewTurn && task.reviewHead === task.readyHead
+    const reviewed = this.reviewed(task, task.readyHead)
     const unreviewed = (github = '') => new Refusal(`Complete a fresh review of this exact commit before reporting ready${this.roundsLeft(task) || this.reviewRunning(task) ? '' : `. ${this.roundsUsed(task)}`}${github}`)
     if (!reviewed && !task.pr) throw unreviewed()
     let reviewMet = task.review.on ? `Shepherdr's review of ${task.readyHead.slice(0, 7)}` : 'off for this task'
@@ -484,7 +484,9 @@ export class CoreTasks {
       const pr = await this.git.pullRequest(location, task.branch, false)
       if (pr.number !== task.pr.number || pr.headRefOid !== task.readyHead || pr.baseRefName !== task.base || pr.state !== 'OPEN') throw new Refusal('Push this exact commit to its open pull request before reporting ready')
       if (!reviewed) {
-        // An approval on GitHub of this exact head, with green checks and no open thread, also meets the review rule.
+        // An approval on GitHub of this exact head, with green checks and no open thread, also meets the review rule;
+        // a Shepherdr review still running is waited for, as it stays the default.
+        if (this.reviewRunning(task)) throw unreviewed()
         const { gaps, approvers } = await this.git.approval(location, remote, pr.number, task.readyHead)
         if (gaps.length) throw unreviewed(`, or get an approval on GitHub of this exact commit (${gaps.join('; ')})`)
         reviewMet = `GitHub approval of ${task.readyHead.slice(0, 7)} by ${approvers.join(', ')}, with green checks and no open review thread`
@@ -562,6 +564,11 @@ export class CoreTasks {
         if (pr.state !== 'MERGED') {
           if (task.mergePolicy === 'checks' && !pr.statusCheckRollup.length) throw new Refusal('No GitHub checks have reported for this commit')
           if (pr.statusCheckRollup.some(check => !['SUCCESS', 'NEUTRAL', 'SKIPPED'].includes(check.conclusion || check.state || 'PENDING'))) throw new Refusal('GitHub checks are not green')
+          if (!this.reviewed(task, head)) {
+            // Ready took GitHub's approval as the review: it must still stand, as an approval can be dismissed.
+            const { gaps } = await this.git.approval(worktree, remote, pr.number, head)
+            if (gaps.length) throw new Refusal(`GitHub's approval no longer meets the review rule for this commit (${gaps.join('; ')}); fix that or complete a fresh review, then report ready again`)
+          }
           task.workflow = 'merging'; this.save(task); await this.label(task)
           await this.git.ghRun({ machine: task.machine, folder: task.folder }, ['pr', 'merge', String(pr.number), '--squash', '--match-head-commit', head, '--repo', remote], 90)
         }
@@ -840,6 +847,7 @@ export class CoreTasks {
     if (!this.reviewEnds.has(reviewer.launch)) this.reviewEnds.set(reviewer.launch, now)
     return now - this.reviewEnds.get(reviewer.launch)! < REVIEW_RELAY
   }
+  private reviewed(task: CoreTask, head: string) { return !task.review.on || !!task.reviewReport && !!task.reviewTurn && task.reviewHead === head }
   private roundsLeft(task: CoreTask) { return task.review.rounds - (task.reviewRound ?? 0) }
   private roundsUsed(task: CoreTask) { return `All ${task.review.rounds} review rounds are used. If a commit still needs a review, say why in your chat and end your turn: only your coordinator can add a round (shepherdr task review-more ${task.id})` }
   /** One more round past the setting. The limit stops an agent reviewing for ever, so its own agent can never raise it. */
