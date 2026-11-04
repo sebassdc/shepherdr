@@ -142,7 +142,8 @@ out, or a turn ended without `ready` and no review under way (while its recorded
 for review"; a reviewer that asks, dies or stalls makes it Needs you); **Queued** is `--after` or no room on the machine (Shepherdr starts it once there
 is room); **To do** is waiting for a go; **Ready to merge** waits for the human; **Merging** runs until it is in.
 A card you settled in the chat instead, or that went moot, still holds Needs you: `shepherdr ask withdraw <id> --why
-"<one line>"` closes that task's open ask and plan cards and tells its agent (never a merge card or a permission).
+"<one line>"` closes that task's open ask and plan cards and tells its agent (never a merge card or a permission);
+without the id it closes your own.
 
 ## QC
 

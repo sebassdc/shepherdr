@@ -229,3 +229,18 @@ test('contained mode-off is only the private current coordinator’s own run and
     await expect(f.cli('mode', 'regular', '--why', 'Repeat')).rejects.toThrow('stopped')
   } finally { f.close() }
 })
+
+test('a contained coordinator withdraws cards only on tasks its run owns', async () => {
+  const f = fixture()
+  try {
+    f.source.store.set('task', 'EX-2', { ...f.task, id: 'EX-2', localId: 'EX-2', chat: 'EX-2/Agent', pilot: undefined })
+    const ask = (chat: string, id: string) => f.source.store.set('question', id, { id, chat, grant: chat, question: { id, title: id, kind: 'Question', choices: [{ label: 'Yes' }], to: chat }, answered: false })
+    for (const chat of ['EX-1/Agent', 'EX-2/Agent']) f.source.store.set('agent', chat, { ...f.agent, chat, grant: chat, launch: chat, role: 'task', pilot: undefined })
+    ask('EX-1/Agent', 'own-card'); ask('EX-2/Agent', 'other-card')
+    await expect(f.cli('ask', 'withdraw', 'EX-2')).rejects.toThrow('does not own')
+    await expect(f.cli('ask', 'withdraw', 'other-card')).rejects.toThrow('does not own')
+    expect(f.source.questions.open('EX-2/Agent')).toHaveLength(1)
+    expect((await f.cli('ask', 'withdraw', 'EX-1')).out).toContain('Withdrew 1 card')
+    expect(f.source.questions.open('EX-1/Agent')).toHaveLength(0)
+  } finally { f.close() }
+})

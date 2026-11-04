@@ -2,7 +2,7 @@ import { Refusal } from './client.ts'
 import { randomUUID } from 'node:crypto'
 import type { Action, Message, Question } from '../../shared/types.ts'
 import { askText, quickChoices } from '../../shared/alerts.ts'
-import { one, parseArgs } from '../common/args.ts'
+import { one, parseArgs, type Parsed } from '../common/args.ts'
 import { tag } from '../common/chatlines.ts'
 import type { Grant } from './mailbox.ts'
 import type { CoreSource } from './source.ts'
@@ -27,9 +27,10 @@ export class CoreQuestions {
     this.source.clearAlert(row.chat, said)
   }
   /** ask and plan, or ask withdraw [TASK|CARD] [--why TEXT]: close open ask and plan cards nobody needs answered any more. */
+  withdrawing(p: Parsed) { return p.words[0] === 'ask' && p.words[1] === 'withdraw' && !p.opts.choice && !p.opts.step && !p.flags.has('other') }
   cli(grant: Grant, args: string[]) {
     const p = parseArgs(args)
-    if (p.words[0] !== 'ask' || p.words[1] !== 'withdraw' || p.opts.choice || p.opts.step || p.flags.has('other')) return `Asked: ${this.create(grant, args)}`
+    if (!this.withdrawing(p)) return `Asked: ${this.create(grant, args)}`
     return this.withdraw(grant, p.words[2], one(p, 'why'))
   }
   /** Only shepherdr ask and plan cards: a merge card, a permission or a secret box never goes this way. */
