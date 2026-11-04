@@ -124,7 +124,10 @@
 - Review rounds are a limit so no agent reviews for ever, and an agent can't raise its own. One that has used them all
   with its final commit unreviewed is refused and told to ask its coordinator, who gives it exactly one more with
   `shepherdr task review-more <id>`: you ask the coordinator, as for any task control. It works only once all are
-  used, and `task show` records it (`reviewRoundsAdded`).
+  used, and `task show` records it (`reviewRoundsAdded`). A task with a pull request needs no extra round when GitHub
+  already approves it: an approval of its exact head by someone other than its author, with every reported check there
+  green and no unresolved review thread, meets the review rule too. An approval of an older commit, a dismissed one or
+  the author's own never does. Ready says which way the rule was met.
 - One menu holds a task's controls: its row's ⋯ (a mouse finds it on hover; on a phone tap the ⋯ or hold the row) and its
   chat's ⋯. It ends a task three ways: Stop, Done and Delete. Stop and Delete ask first; Done asks first only when
   work would stay unmerged. It also holds Pin and Restart agent, and Unarchive on an archived task.

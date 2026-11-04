@@ -117,4 +117,47 @@ export class CoreGit {
     return this.gh<{ number: number; url: string; state: string; isDraft?: boolean; headRefOid: string; baseRefName: string; mergeCommit?: { oid: string } | null; statusCheckRollup: { conclusion?: string; status?: string; state?: string; name?: string; context?: string; targetUrl?: string; detailsUrl?: string }[] }>(repo,
       ['pr', 'view', branch, '--repo', remote, '--json', `number,url,state,isDraft,headRefOid,baseRefName,mergeCommit${checks ? ',statusCheckRollup' : ''}`])
   }
+  /** remote is host/owner/name, as remote() gives it. */
+  async approval(repo: RepoLocation, remote: string, number: number, head: string) {
+    const [host, owner, name] = remote.split('/')
+    const read = await this.gh<{ data?: { repository?: { pullRequest?: ApprovalRead | null } | null } }>(repo,
+      ['api', 'graphql', '--hostname', host, '-f', `query=${APPROVAL_QUERY}`, '-f', `o=${owner}`, '-f', `r=${name}`, '-F', `n=${number}`])
+    return approvalGaps(read?.data?.repository?.pullRequest, head)
+  }
+}
+
+/** One read of what GitHub's own review says about a pull request: its head, checks there, reviews and threads. */
+const APPROVAL_QUERY = `query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){
+  state headRefOid reviewDecision author{login}
+  commits(last:1){nodes{commit{oid statusCheckRollup{contexts(first:100){pageInfo{hasNextPage} nodes{__typename
+    ... on CheckRun{name status conclusion} ... on StatusContext{context state}}}}}}}
+  reviews(last:100){nodes{state author{login} commit{oid}}}
+  reviewThreads(first:100){pageInfo{hasNextPage} nodes{isResolved}}}}}`
+export interface ApprovalRead {
+  state: string; headRefOid: string; reviewDecision?: string | null; author?: { login: string } | null
+  commits: { nodes: { commit: { oid: string; statusCheckRollup?: { contexts: { pageInfo: { hasNextPage: boolean }; nodes: { name?: string; context?: string; status?: string; conclusion?: string | null; state?: string }[] } } | null } }[] }
+  reviews: { nodes: { state: string; author?: { login: string } | null; commit?: { oid: string } | null }[] }
+  reviewThreads: { pageInfo: { hasNextPage: boolean }; nodes: { isResolved: boolean }[] }
+}
+/** GitHub's review stands in for Shepherdr's only with an approval on this exact head by someone other than the
+ * author, every reported check there green and no open review thread: what the house merge check asks too. */
+export function approvalGaps(pr: ApprovalRead | null | undefined, head: string) {
+  if (!pr) return { gaps: ['GitHub found no such pull request'], approvers: [] }
+  const gaps: string[] = []
+  if (pr.state !== 'OPEN') gaps.push(`the pull request is ${pr.state.toLowerCase()}`)
+  const commit = pr.commits.nodes[0]?.commit
+  if (pr.headRefOid !== head || commit?.oid !== head) gaps.push('its head on GitHub is another commit')
+  const checks = commit?.statusCheckRollup?.contexts
+  const bad = (checks?.nodes ?? []).filter(check => !['SUCCESS', 'NEUTRAL', 'SKIPPED'].includes((check.conclusion || check.status || check.state || '').toUpperCase()))
+  if (!checks?.nodes.length) gaps.push('no checks reported on it')
+  if (checks?.pageInfo.hasNextPage) gaps.push('over 100 checks, read them by hand')
+  if (bad.length) gaps.push(`checks not green: ${bad.slice(0, 5).map(check => check.name || check.context).join(', ')}`)
+  const author = pr.author?.login
+  const approvers = [...new Set(pr.reviews.nodes.filter(review => review.state === 'APPROVED' && review.commit?.oid === head && review.author?.login && review.author.login !== author).map(review => review.author!.login))]
+  if (!approvers.length) gaps.push('no approval on this exact commit by anyone but its author')
+  if (pr.reviewDecision === 'CHANGES_REQUESTED' || pr.reviewDecision === 'REVIEW_REQUIRED') gaps.push(`GitHub's review decision is ${pr.reviewDecision.toLowerCase().replace('_', ' ')}`)
+  const open = pr.reviewThreads.nodes.filter(thread => !thread.isResolved).length
+  if (pr.reviewThreads.pageInfo.hasNextPage) gaps.push('over 100 review threads, read them by hand')
+  if (open) gaps.push(`${open} unresolved review thread${open === 1 ? '' : 's'}`)
+  return { gaps, approvers }
 }

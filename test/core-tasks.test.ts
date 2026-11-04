@@ -813,6 +813,26 @@ test('Ready promotes only its confirmed exact-head draft PR and records the fina
   expect(tasks.get(task.id)?.workflow).toBe('ready')
 }))
 
+test('with its rounds used, a task reports ready on a GitHub approval of its exact head; without a PR it still needs the review', () => withTask(async ({ tasks, task, grant }) => {
+  const head = await tasks.git.head({ machine: task.machine, folder: task.folder })
+  const source = (tasks as unknown as { source: CoreSource }).source
+  source.store.set('task', task.id, { ...task, mergePolicy: 'checks', review: { ...task.review, on: true, rounds: 1 }, reviewRound: 1 })
+  await expect(tasks.ready(grant, task.id, 'Changed the sample')).rejects.toThrow('Complete a fresh review')
+  source.store.set('task', task.id, { ...tasks.get(task.id)!, pr: { number: 7, url: 'https://github.test/o/r/pull/7' } })
+  tasks.git.remote = async () => 'github.test/o/r'
+  tasks.git.ghRun = async () => ''
+  tasks.git.pullRequest = async () => ({ number: 7, url: 'https://github.test/o/r/pull/7', state: 'OPEN', isDraft: false, headRefOid: head, baseRefName: task.base, statusCheckRollup: [] })
+  let asked = ''
+  tasks.git.approval = async (_repo, _remote, _number, at) => { asked = at; return { gaps: ['1 unresolved review thread'], approvers: [] } }
+  await expect(tasks.ready(grant, task.id, 'Changed the sample')).rejects.toThrow('approval on GitHub of this exact commit (1 unresolved review thread)')
+  expect(asked).toBe(head)
+  expect(tasks.get(task.id)?.workflow).toBe('working')
+  tasks.git.approval = async () => ({ gaps: [], approvers: ['reviewer'] })
+  const result = await tasks.cli(grant, ['ready', task.id, '--summary', 'Changed the sample'])
+  expect(result.out).toContain(`Review: GitHub approval of ${head.slice(0, 7)} by reviewer`)
+  expect(tasks.get(task.id)?.workflow).toBe('ready')
+}))
+
 test('a PR lookup failure never creates another PR or reports Ready', () => withTask(async ({ tasks, task, grant }) => {
   const calls: string[][] = [], run = tasks.git.run.bind(tasks.git)
   tasks.git.remote = async () => 'github.test/o/r'

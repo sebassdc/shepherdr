@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { CoreGit, githubRemote } from '../server/core/git.ts'
+import { CoreGit, approvalGaps, githubRemote, type ApprovalRead } from '../server/core/git.ts'
 import type { CoreFiles } from '../server/core/files.ts'
 
 test('GitHub remote forms retain their explicit host including legacy enterprise and rewritten hosts', () => {
@@ -97,4 +97,30 @@ test('a checkout switch cannot change the task ref whose captured commit is push
   }
   expect(await git.pushTaskBranch({ machine: 'machine', folder: '/work' }, 'work/one')).toBe(saved)
   expect(pushes[0]).toEqual(['push', `--force-with-lease=${ref}:`, 'origin', `${saved}:${ref}`])
+})
+
+test('a GitHub approval counts only on the exact head, by someone else, with green checks and no open thread', async () => {
+  const head = 'a'.repeat(40), old = 'b'.repeat(40)
+  const pr = (change: Partial<ApprovalRead> = {}): ApprovalRead => ({ state: 'OPEN', headRefOid: head, reviewDecision: 'APPROVED', author: { login: 'writer' },
+    commits: { nodes: [{ commit: { oid: head, statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: [{ name: 'check', status: 'COMPLETED', conclusion: 'SUCCESS' }, { context: 'ci', state: 'SUCCESS' }] } } } }] },
+    reviews: { nodes: [{ state: 'APPROVED', author: { login: 'reviewer' }, commit: { oid: head } }] },
+    reviewThreads: { pageInfo: { hasNextPage: false }, nodes: [{ isResolved: true }] }, ...change })
+  expect(approvalGaps(pr(), head)).toEqual({ gaps: [], approvers: ['reviewer'] })
+  expect(approvalGaps(pr({ reviews: { nodes: [{ state: 'APPROVED', author: { login: 'reviewer' }, commit: { oid: old } }] } }), head).gaps).toEqual(['no approval on this exact commit by anyone but its author'])
+  expect(approvalGaps(pr({ reviews: { nodes: [{ state: 'DISMISSED', author: { login: 'reviewer' }, commit: { oid: head } }] } }), head).approvers).toEqual([])
+  expect(approvalGaps(pr({ reviews: { nodes: [{ state: 'APPROVED', author: { login: 'writer' }, commit: { oid: head } }, { state: 'APPROVED', author: null, commit: { oid: head } }] } }), head).approvers).toEqual([])
+  expect(approvalGaps(pr({ reviewThreads: { pageInfo: { hasNextPage: false }, nodes: [{ isResolved: false }] } }), head).gaps).toEqual(['1 unresolved review thread'])
+  expect(approvalGaps(pr({ reviewDecision: 'CHANGES_REQUESTED' }), head).gaps).toEqual(["GitHub's review decision is changes requested"])
+  const pending = pr(); pending.commits.nodes[0].commit.statusCheckRollup!.contexts.nodes[0] = { name: 'check', status: 'IN_PROGRESS', conclusion: null }
+  expect(approvalGaps(pending, head).gaps).toEqual(['checks not green: check'])
+  const none = pr(); none.commits.nodes[0].commit.statusCheckRollup = null
+  expect(approvalGaps(none, head).gaps).toEqual(['no checks reported on it'])
+  expect(approvalGaps(pr(), old).gaps).toContain('its head on GitHub is another commit')
+  expect(approvalGaps(pr({ state: 'MERGED' }), head).gaps).toContain('the pull request is merged')
+  expect(approvalGaps(null, head).gaps).toEqual(['GitHub found no such pull request'])
+  const calls: string[][] = []
+  const git = new CoreGit({ exec: async (_machine: string, argv: string[]) => { calls.push(argv); return Buffer.from(JSON.stringify({ data: { repository: { pullRequest: pr() } } })) } } as unknown as CoreFiles)
+  expect(await git.approval({ machine: 'm', folder: '/repo' }, 'github.test/owner/repo', 12, head)).toEqual({ gaps: [], approvers: ['reviewer'] })
+  expect(calls[0].slice(0, 5)).toEqual(['gh', 'api', 'graphql', '--hostname', 'github.test'])
+  expect(calls[0]).toContain('o=owner'); expect(calls[0]).toContain('r=repo'); expect(calls[0]).toContain('n=12')
 })

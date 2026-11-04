@@ -55,6 +55,8 @@ export interface CoreTask extends Task {
   reviewReport?: string
   reviewTurn?: string
   reviewFailure?: string
+  /** how the last ready report met the review rule */
+  reviewMet?: string
   mergeQuestion?: string
   startError?: string
   includesPending?: boolean
@@ -472,17 +474,26 @@ export class CoreTasks {
       return task
     }
     if (task.reviewHead === task.readyHead && this.relaying(task)) throw new Refusal(RELAYING)
-    if (task.review.on && (!task.reviewReport || !task.reviewTurn || task.reviewHead !== task.readyHead)) throw new Refusal(`Complete a fresh review of this exact commit before reporting ready${this.roundsLeft(task) || this.reviewRunning(task) ? '' : `. ${this.roundsUsed(task)}`}`)
+    const reviewed = !task.review.on || !!task.reviewReport && !!task.reviewTurn && task.reviewHead === task.readyHead
+    const unreviewed = (github = '') => new Refusal(`Complete a fresh review of this exact commit before reporting ready${this.roundsLeft(task) || this.reviewRunning(task) ? '' : `. ${this.roundsUsed(task)}`}${github}`)
+    if (!reviewed && !task.pr) throw unreviewed()
+    let reviewMet = task.review.on ? `Shepherdr's review of ${task.readyHead.slice(0, 7)}` : 'off for this task'
     if (task.pr) {
       const location = { machine: task.machine, folder: task.folder }, remote = await this.git.remote(location)
       if (!remote) throw new Refusal('The saved pull request no longer has its GitHub origin')
       const pr = await this.git.pullRequest(location, task.branch, false)
       if (pr.number !== task.pr.number || pr.headRefOid !== task.readyHead || pr.baseRefName !== task.base || pr.state !== 'OPEN') throw new Refusal('Push this exact commit to its open pull request before reporting ready')
+      if (!reviewed) {
+        // An approval on GitHub of this exact head, with green checks and no open thread, also meets the review rule.
+        const { gaps, approvers } = await this.git.approval(location, remote, pr.number, task.readyHead)
+        if (gaps.length) throw unreviewed(`, or get an approval on GitHub of this exact commit (${gaps.join('; ')})`)
+        reviewMet = `GitHub approval of ${task.readyHead.slice(0, 7)} by ${approvers.join(', ')}, with green checks and no open review thread`
+      }
       await this.git.ghRun(location, ['pr', 'edit', String(pr.number), '--repo', remote, '--body-file', '-'], 60, `${summary.trim()}${facts ? '\n\nFacts: ' + facts : ''}`)
       if (pr.isDraft) await this.git.ghRun(location, ['pr', 'ready', String(pr.number), '--repo', remote])
     }
     delete task.approvedHead
-    task.said = summary; task.facts = facts; task.workflow = 'ready'; task.readyAt = Date.now(); delete task.reservedAt
+    task.said = summary; task.facts = facts; task.workflow = 'ready'; task.readyAt = Date.now(); task.reviewMet = reviewMet; delete task.reservedAt
     this.save(task); await this.label(task); this.card(task, `Ready: ${summary}`)
     if (task.mergePolicy === 'ask') {
       const question: Question = { id: randomUUID(), title: `Merge ${task.id}?`, kind: 'Question', choices: [{ label: 'Merge' }, { label: 'Not yet' }], to: task.chat, evidence: await this.evidence(task) }
@@ -1054,7 +1065,7 @@ export class CoreTasks {
     if (verb === 'ready' || verb === 'done') {
       const summary = summaryOpts(parsed, rest)
       const result = await this.ready(grant, id, summary.said || '', summary.facts)
-      return text(`${id} is ${result.workflow === 'closed' ? 'Done; nothing to merge' : result.workflow === 'merged' ? 'Merged' : 'ready'}${result.cleanupReceipt ? `\nInternal completion receipt: ${result.cleanupReceipt}; do not repeat it in chat.` : ''}`)
+      return text(`${id} is ${result.workflow === 'closed' ? 'Done; nothing to merge' : result.workflow === 'merged' ? 'Merged' : 'ready'}${result.workflow === 'ready' && result.reviewMet ? `\nReview: ${result.reviewMet}` : ''}${result.cleanupReceipt ? `\nInternal completion receipt: ${result.cleanupReceipt}; do not repeat it in chat.` : ''}`)
     }
     if (verb === 'pr' || verb === 'task' && sub === 'pr') return text(await this.pr(grant, id))
     if (verb === 'checks') {
