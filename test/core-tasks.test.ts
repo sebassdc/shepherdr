@@ -195,7 +195,7 @@ test('an ended reviewer has its records read at once, not in its turn among ever
     source.agents.get = key => key === chat ? { chat, launch: 'review-launch', role: 'reviewer', state: 'idle' } as ReturnType<typeof original> : original(key)
     source.agents.terminal = () => ({ address: 't1', state: state.terminal, exit_code: 0 }) as ReturnType<typeof source.agents.terminal>
     Object.defineProperty(source, 'logs', { value: { messages: () => [], readNow: (key: string) => read.push(key) } })
-    source.store.set('task', task.id, { ...task, reviewChat: chat, reviewHead: 'head', reviewRound: 1 })
+    source.store.set('task', task.id, { ...task, review: { ...task.review, on: true }, reviewChat: chat, reviewHead: 'head', reviewRound: 1 })
     await tasks.tick()
     expect(read).toEqual([]) // Still running: the poll reads it in its turn.
     state.terminal = 'finished'
@@ -203,7 +203,7 @@ test('an ended reviewer has its records read at once, not in its turn among ever
     expect(read).toEqual([chat])
     // Ready before the relay lands says to wait, not to start another round that would drop this report.
     const head = Bun.spawnSync(['git', 'rev-parse', 'HEAD'], { cwd: worktree }).stdout.toString().trim()
-    source.store.set('task', task.id, { ...tasks.get(task.id)!, review: { ...task.review, on: true }, reviewHead: head })
+    source.store.set('task', task.id, { ...tasks.get(task.id)!, reviewHead: head })
     await expect(tasks.ready(grant, task.id, 'Changed example')).rejects.toThrow('on its way to your chat')
     await expect(tasks.review(grant, task.id)).rejects.toThrow('on its way to your chat')
     source.store.set(`event:${chat}`, 'turn', { kind: 'turn-end', id: 'turn', at: 300 })
