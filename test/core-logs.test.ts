@@ -90,6 +90,29 @@ test('poll slots rotate so more than four chats on one machine all make progress
   } finally { logs.stop(); store.close(); rmSync(home, { recursive: true, force: true }) }
 })
 
+test('each poll resumes after the chats it read, and a full machine keeps its unread place', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'shep-log-turns-')), store = new CoreStore(home)
+  const agents = Array.from({ length: 14 }, (_, i) => ({ chat: `chat-${i}`, machine: i < 12 ? 'same' : 'other', launch: 'one', grant: 'grant', kind: 'codex', hook: join(home, `hooks-${i}`), transcript: join(home, `native-${i}`), state: 'idle' }))
+  for (const agent of agents) {
+    writeFileSync(agent.hook, '')
+    writeFileSync(agent.transcript, JSON.stringify({ timestamp: '2026-10-29T12:00:00Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: agent.chat }] } }) + '\n')
+  }
+  const read: string[] = []
+  const files = { exec: async (_machine: string, argv: string[], _cwd: string, input: Uint8Array) => {
+    const path = JSON.parse(Buffer.from(input).toString()).path as string
+    if (path.includes('native-')) read.push(path.slice(path.lastIndexOf('native-') + 7))
+    return runChild(argv, { input })
+  } } as unknown as CoreFiles
+  const logs = new CoreLogs({ all: () => agents, get: (chat: string) => agents.find(agent => agent.chat === chat), hook: () => {}, bun: async () => process.execPath } as unknown as CoreAgents, files, store, () => {}, () => {})
+  try {
+    // 'same' reads four a poll: chats 0-3, then 4-7, then 8-11, not 1-4 and 2-5; 'other' has room for its two each time.
+    const polls: number[][] = []
+    for (let i = 0; i < 3; i++) { read.length = 0; await logs.poll(); polls.push(read.map(Number).sort((a, b) => a - b)) }
+    expect(polls).toEqual([[0, 1, 2, 3, 12, 13], [4, 5, 6, 7, 12, 13], [8, 9, 10, 11, 12, 13]])
+    for (const agent of agents) expect(logs.messages(agent.chat).map(message => message.text)).toEqual([agent.chat])
+  } finally { logs.stop(); store.close(); rmSync(home, { recursive: true, force: true }) }
+})
+
 test('completion cleanup requires its private command receipt and later captured native turn end, not Stop idle', async () => {
   const home = mkdtempSync(join(tmpdir(), 'shep-log-cleanup-')), store = new CoreStore(home)
   const agent = { chat: 'TASK-1/Agent', machine: 'machine', launch: 'one', grant: 'grant', kind: 'claude', hook: join(home, 'hooks'), transcript: join(home, 'native'), state: 'idle' } as import('../server/core/model.ts').CoreAgent

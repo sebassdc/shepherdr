@@ -26,6 +26,7 @@ export class CoreLogs {
   private reading = new Map<string, Promise<void>>()
   private machines = new Map<string, number>()
   private next = 0
+  private after = 0
   private timer?: ReturnType<typeof setInterval>
   constructor(private readonly agents: CoreAgents, private readonly files: CoreFiles, private readonly store: CoreStore,
     private readonly changed: (chat: string) => void, private readonly error: (chat: string, message: string) => void,
@@ -40,15 +41,23 @@ export class CoreLogs {
   async poll() {
     const jobs: Promise<void>[] = []
     const agents = this.agents.all()
-    const turn = this.next++, spin = (list: CoreAgent[]) => { const first = turn % Math.max(1, list.length); return [...list.slice(first), ...list.slice(0, first)] }
+    const turn = this.next++, spin = (list: CoreAgent[], first: number) => { first %= Math.max(1, list.length); return [...list.slice(first), ...list.slice(0, first)] }
     // Each poll reads only so many: agents with a card open take turns first, so a card closes within seconds, and every
     // other read stays with the rest, so many cards leave no agent unread.
-    const waiting = spin(agents.filter(agent => agent.permission)), rest = spin(agents.filter(agent => !agent.permission))
+    // The rest resume at the first one a full machine left unread, else after the last one read: moving one place per
+    // poll re-read the same few, so with hundreds of agents each waited minutes for its turn.
+    const others = agents.filter(agent => !agent.permission), order = new Map(others.map((agent, at) => [agent, at]))
+    const waiting = spin(agents.filter(agent => agent.permission), turn), rest = spin(others, this.after)
+    let resume: number | undefined, after: number | undefined
     for (const agent of [...waiting.flatMap((agent, at) => at < rest.length ? [agent, rest[at]] : [agent]), ...rest.slice(waiting.length)]) {
-      if (this.reading.has(agent.chat) || (this.machines.get(agent.machine) ?? 0) >= 4) continue
+      if (this.reading.has(agent.chat)) continue
+      const full = (this.machines.get(agent.machine) ?? 0) >= 4, at = order.get(agent)
+      if (at !== undefined) { if (full) resume ??= at; else after = at + 1 }
+      if (full) continue
       this.machines.set(agent.machine, (this.machines.get(agent.machine) ?? 0) + 1)
       jobs.push(this.claim(agent).finally(() => this.machines.set(agent.machine, (this.machines.get(agent.machine) ?? 1) - 1)))
     }
+    this.after = resume ?? after ?? this.after
     await Promise.all(jobs)
   }
   private async read(agent: CoreAgent) {
@@ -63,6 +72,11 @@ export class CoreLogs {
     const job = this.read(agent).finally(() => this.reading.delete(agent.chat))
     this.reading.set(agent.chat, job)
     return job
+  }
+  /** Reads this agent's records now, outside its turn in the poll; a read already under way is enough. */
+  readNow(chat: string) {
+    const agent = this.agents.get(chat)
+    if (agent && !this.reading.has(chat)) void this.claim(agent)
   }
   /** Reads this agent's records from now, for an answer that must not outrun what they already say: a read under way may have begun too early. */
   async catchUp(chat: string) {

@@ -187,6 +187,26 @@ test('review relay waits for a successful native turn end, not idle or commentar
   })
 })
 
+test('an ended reviewer has its records read at once, not in its turn among every agent', async () => {
+  await withTask(async ({ tasks, task, state }) => {
+    const source = (tasks as unknown as { source: CoreSource }).source
+    const original = source.agents.get.bind(source.agents)
+    const chat = `${task.id}/Reviewer-1`, read: string[] = []
+    source.agents.get = key => key === chat ? { chat, launch: 'review-launch', role: 'reviewer', state: 'idle' } as ReturnType<typeof original> : original(key)
+    source.agents.terminal = () => ({ address: 't1', state: state.terminal, exit_code: 0 }) as ReturnType<typeof source.agents.terminal>
+    Object.defineProperty(source, 'logs', { value: { messages: () => [], readNow: (key: string) => read.push(key) } })
+    source.store.set('task', task.id, { ...task, reviewChat: chat, reviewHead: 'head', reviewRound: 1 })
+    await tasks.tick()
+    expect(read).toEqual([]) // Still running: the poll reads it in its turn.
+    state.terminal = 'finished'
+    await tasks.tick()
+    expect(read).toEqual([chat])
+    source.store.set(`event:${chat}`, 'turn', { kind: 'turn-end', id: 'turn', at: 300 })
+    await tasks.tick()
+    expect(read).toEqual([chat]) // Its end is in: nothing more to fetch.
+    expect(tasks.get(task.id)?.reviewFailure).toBeUndefined()
+  })
+})
 
 test('checks-only policy cannot silently squash a repository without GitHub checks', async () => {
   await withTask(async ({ tasks, task, grant, repo }) => {

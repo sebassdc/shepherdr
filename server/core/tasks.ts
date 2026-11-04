@@ -885,6 +885,8 @@ export class CoreTasks {
           const end = this.source.store.all<LogEvent>(`event:${task.reviewChat}`).filter(event => event.kind === 'turn-end').at(-1)
           const terminal = reviewer && this.source.agents.terminal(reviewer)
           const completed = reviewer?.transcriptFormat !== 'codex-exec' || terminal?.state === 'finished' && terminal.exit_code === 0
+          // Its report is in records the log poll reaches only in its turn among every agent: read them now it has ended.
+          if (reviewer && terminal?.state === 'finished' && !end && task.reviewFailure !== reviewer.launch) this.source.logs.readNow(task.reviewChat)
           if (reviewer && task.reviewFailure !== reviewer.launch && (end?.kind === 'turn-end' && end.aborted || (reviewer.transcriptFormat === 'codex-exec' || !end) && terminal?.state === 'finished' && terminal.exit_code !== 0)) {
             this.source.saveAndDeliver(task.chat, `review-failed-${reviewer.launch}`, '<review-failed>The reviewer stopped without a successful report. Do not treat its partial words as findings or report ready; request another fresh review.</review-failed>', () => {
               task.reviewFailure = reviewer.launch; this.source.store.set('task', task.id, task)
