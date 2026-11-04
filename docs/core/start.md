@@ -76,6 +76,8 @@ shepherdr start --core-session default --herdr-app
 - Each space's coordinator gets its own app space, with a tab for itself; each task's agent gets a tab in that space.
   Reviewers, child agents and browsers get no tab: the app lists them under the agent that started them.
 - The ids are fixed per space and task, so an agent that starts again comes back in the same space and tab.
+- Agents already running when you turn it on, on any machine, get the same ids added to their live terminals, so the
+  app shows them without a restart.
 - Closing an agent's tab in the app ends that agent. Shepherdr shows it stopped; the next message to it, or Restart,
   starts it again in the same tab.
 - The app keeps its terminals: when an agent is lost (a crash, a core restart, a reboot) core leaves a shell in its
