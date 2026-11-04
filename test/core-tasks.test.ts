@@ -188,7 +188,7 @@ test('review relay waits for a successful native turn end, not idle or commentar
 })
 
 test('an ended reviewer has its records read at once, not in its turn among every agent', async () => {
-  await withTask(async ({ tasks, task, state }) => {
+  await withTask(async ({ tasks, task, state, grant, worktree }) => {
     const source = (tasks as unknown as { source: CoreSource }).source
     const original = source.agents.get.bind(source.agents)
     const chat = `${task.id}/Reviewer-1`, read: string[] = []
@@ -201,6 +201,10 @@ test('an ended reviewer has its records read at once, not in its turn among ever
     state.terminal = 'finished'
     await tasks.tick()
     expect(read).toEqual([chat])
+    // Ready before the relay lands says to wait, not to start another round that would drop this report.
+    const head = Bun.spawnSync(['git', 'rev-parse', 'HEAD'], { cwd: worktree }).stdout.toString().trim()
+    source.store.set('task', task.id, { ...tasks.get(task.id)!, review: { ...task.review, on: true }, reviewHead: head })
+    await expect(tasks.ready(grant, task.id, 'Changed example')).rejects.toThrow('on its way to your chat')
     source.store.set(`event:${chat}`, 'turn', { kind: 'turn-end', id: 'turn', at: 300 })
     await tasks.tick()
     expect(read).toEqual([chat]) // Its end is in: nothing more to fetch.

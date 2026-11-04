@@ -26,7 +26,8 @@ export class CoreLogs {
   private reading = new Map<string, Promise<void>>()
   private machines = new Map<string, number>()
   private next = 0
-  private after = 0
+  private reads = 0
+  private lastRead = new Map<string, number>()
   private timer?: ReturnType<typeof setInterval>
   constructor(private readonly agents: CoreAgents, private readonly files: CoreFiles, private readonly store: CoreStore,
     private readonly changed: (chat: string) => void, private readonly error: (chat: string, message: string) => void,
@@ -41,23 +42,19 @@ export class CoreLogs {
   async poll() {
     const jobs: Promise<void>[] = []
     const agents = this.agents.all()
-    const turn = this.next++, spin = (list: CoreAgent[], first: number) => { first %= Math.max(1, list.length); return [...list.slice(first), ...list.slice(0, first)] }
+    const turn = this.next++, spin = (list: CoreAgent[]) => { const first = turn % Math.max(1, list.length); return [...list.slice(first), ...list.slice(0, first)] }
     // Each poll reads only so many: agents with a card open take turns first, so a card closes within seconds, and every
     // other read stays with the rest, so many cards leave no agent unread.
-    // The rest resume at the first one a full machine left unread, else after the last one read: moving one place per
-    // poll re-read the same few, so with hundreds of agents each waited minutes for its turn.
-    const others = agents.filter(agent => !agent.permission), order = new Map(others.map((agent, at) => [agent, at]))
-    const waiting = spin(agents.filter(agent => agent.permission), turn), rest = spin(others, this.after)
-    let resume: number | undefined, after: number | undefined
+    const waiting = spin(agents.filter(agent => agent.permission))
+    // The rest go least recently read first, so a full or slow machine keeps its agents' places without holding up another's.
+    // Moving one place per poll re-read the same few: with hundreds of agents each waited minutes for its turn.
+    const rest = agents.filter(agent => !agent.permission).sort((a, b) => (this.lastRead.get(a.chat) ?? -1) - (this.lastRead.get(b.chat) ?? -1))
     for (const agent of [...waiting.flatMap((agent, at) => at < rest.length ? [agent, rest[at]] : [agent]), ...rest.slice(waiting.length)]) {
-      if (this.reading.has(agent.chat)) continue
-      const full = (this.machines.get(agent.machine) ?? 0) >= 4, at = order.get(agent)
-      if (at !== undefined) { if (full) resume ??= at; else after = at + 1 }
-      if (full) continue
+      if (this.reading.has(agent.chat) || (this.machines.get(agent.machine) ?? 0) >= 4) continue
+      this.lastRead.set(agent.chat, this.reads++)
       this.machines.set(agent.machine, (this.machines.get(agent.machine) ?? 0) + 1)
       jobs.push(this.claim(agent).finally(() => this.machines.set(agent.machine, (this.machines.get(agent.machine) ?? 1) - 1)))
     }
-    this.after = resume ?? after ?? this.after
     await Promise.all(jobs)
   }
   private async read(agent: CoreAgent) {

@@ -470,6 +470,9 @@ export class CoreTasks {
       this.save(task); await this.label(task); this.card(task, `Done: ${summary}`)
       return task
     }
+    // An ended review of this commit is only being relayed: another round would drop its report.
+    const relaying = task.review.on && !task.reviewTurn && task.reviewHead === task.readyHead && task.reviewChat && this.source.agents.get(task.reviewChat)
+    if (relaying && task.reviewFailure !== relaying.launch && this.source.agents.terminal(relaying)?.state === 'finished') throw new Refusal('The review of this exact commit has ended and its report is on its way to your chat as a <review> line. Wait for it, then report ready again; do not start another review.')
     if (task.review.on && (!task.reviewReport || !task.reviewTurn || task.reviewHead !== task.readyHead)) throw new Refusal(`Complete a fresh review of this exact commit before reporting ready${this.roundsLeft(task) || this.reviewRunning(task) ? '' : `. ${this.roundsUsed(task)}`}`)
     if (task.pr) {
       const location = { machine: task.machine, folder: task.folder }, remote = await this.git.remote(location)

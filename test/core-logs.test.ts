@@ -90,7 +90,7 @@ test('poll slots rotate so more than four chats on one machine all make progress
   } finally { logs.stop(); store.close(); rmSync(home, { recursive: true, force: true }) }
 })
 
-test('each poll resumes after the chats it read, and a full machine keeps its unread place', async () => {
+test('each poll reads the chats read least recently, not the same few again', async () => {
   const home = mkdtempSync(join(tmpdir(), 'shep-log-turns-')), store = new CoreStore(home)
   const agents = Array.from({ length: 14 }, (_, i) => ({ chat: `chat-${i}`, machine: i < 12 ? 'same' : 'other', launch: 'one', grant: 'grant', kind: 'codex', hook: join(home, `hooks-${i}`), transcript: join(home, `native-${i}`), state: 'idle' }))
   for (const agent of agents) {
@@ -111,6 +111,31 @@ test('each poll resumes after the chats it read, and a full machine keeps its un
     expect(polls).toEqual([[0, 1, 2, 3, 12, 13], [4, 5, 6, 7, 12, 13], [8, 9, 10, 11, 12, 13]])
     for (const agent of agents) expect(logs.messages(agent.chat).map(message => message.text)).toEqual([agent.chat])
   } finally { logs.stop(); store.close(); rmSync(home, { recursive: true, force: true }) }
+})
+
+test('a machine with every read slot held up does not hold up another machine', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'shep-log-slow-')), store = new CoreStore(home)
+  const agents = [...Array.from({ length: 5 }, (_, i) => `slow-${i}`), ...Array.from({ length: 8 }, (_, i) => `same-${i}`)].map(chat =>
+    ({ chat, machine: chat.split('-')[0], launch: 'one', grant: 'grant', kind: 'codex', hook: join(home, `hooks-${chat}`), transcript: join(home, `native-${chat}`), state: 'idle' }))
+  for (const agent of agents) { writeFileSync(agent.hook, ''); writeFileSync(agent.transcript, '') }
+  let release!: () => void, settled!: () => void, done = 0
+  const blocked = new Promise<void>(resolve => { release = resolve }), firstFour = new Promise<void>(resolve => { settled = resolve })
+  const read: number[] = []
+  const files = { exec: async (machine: string, argv: string[], _cwd: string, input: Uint8Array) => {
+    if (machine === 'slow') { await blocked; throw Error('slow machine gave up') }
+    const path = JSON.parse(Buffer.from(input).toString()).path as string
+    const result = await runChild(argv, { input })
+    if (path.includes('native-same-')) { read.push(Number(path.slice(path.lastIndexOf('-') + 1))); if (++done === 4) settled() }
+    return result
+  } } as unknown as CoreFiles
+  const logs = new CoreLogs({ all: () => agents, get: (chat: string) => agents.find(agent => agent.chat === chat), hook: () => {}, bun: async () => process.execPath } as unknown as CoreAgents, files, store, () => {}, () => {})
+  const first = logs.poll()
+  try {
+    await firstFour; await Bun.sleep(1)
+    expect(read.sort((a, b) => a - b)).toEqual([0, 1, 2, 3])
+    read.length = 0; await logs.poll()
+    expect(read.sort((a, b) => a - b)).toEqual([4, 5, 6, 7]) // slow-4 waits for a slot without pinning the next poll's start.
+  } finally { release(); await first; logs.stop(); store.close(); rmSync(home, { recursive: true, force: true }) }
 })
 
 test('completion cleanup requires its private command receipt and later captured native turn end, not Stop idle', async () => {
