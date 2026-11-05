@@ -163,11 +163,19 @@ test("place: a worker's helper keeps it Working, never Needs you", () => {
 
 describe("a space's tasks (the Tasks panel's This space)", () => {
   const space = { id: "sp1", name: "lane", folder: "/home/me/lanes/lane", machine: null };
-  test("a list in the space's folder, or a repo inside it", () => {
+  test("a list in the space's folder, or a repo directly in it", () => {
     expect(inSpace(space, { folder: "/home/me/lanes/lane" })).toBe(true);
     expect(inSpace({ ...space, folder: "/home/me/lanes/lane/" }, { folder: "/home/me/lanes/lane/repo" })).toBe(true);
+    expect(inSpace(space, { folder: "/home/me/lanes/lane/repo/sub" })).toBe(false);
     expect(inSpace(space, { folder: "/home/me/lanes/lane-2" })).toBe(false);
     expect(inSpace(space, { folder: "/home/me/lanes" })).toBe(false);
+  });
+  test("a space in a home folder has only its own list, not every repo there", () => {
+    for (const home of ["/Users/me", "/home/me", "/root"]) {
+      expect(inSpace({ ...space, folder: home }, { folder: `${home}/repo` })).toBe(false);
+      expect(inSpace({ ...space, folder: home }, { folder: home })).toBe(true);
+      expect(inSpace({ ...space, folder: home }, { folder: `${home}/repo`, space: "sp1" })).toBe(true);
+    }
   });
   test("a task started for the space, wherever its list is", () => {
     expect(inSpace(space, { folder: "/home/me/repo", space: "sp1" })).toBe(true);

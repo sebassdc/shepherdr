@@ -38,13 +38,16 @@ export const taskKey = (list, task) => `${list.machine ?? ""}:${list.folder}#${t
 
 // Whether a task, an automation or a Needs you item is a space's (the Tasks panel's "This space"): on the space's
 // machine, and started for it (herdr-task keeps the space's id on the task: start --space, or the caller's), or in
-// a list whose folder is the space's or inside it (a space whose folder holds several repos, each with its own list).
+// a list whose folder is the space's, or a repo directly in it (a folder space holds its repos, each with its own
+// list), unless the space's folder is a home folder (every repo there would be its).
 // space: spaces()'s { id, folder, machine }; ids may carry "<machine>/".
+const HOME = /^\/(Users|home)\/[^/]+$|^\/root$/;
 export function inSpace(space, { machine = null, folder = null, space: id = null } = {}) {
   if (!space || (space.machine ?? null) !== (machine ?? null)) return false;
   if (id && String(id).split("/").pop() === String(space.id).split("/").pop()) return true;
-  const f = String(space.folder ?? "").replace(/\/+$/, "");
-  return Boolean(f && folder) && (folder === f || String(folder).startsWith(`${f}/`));
+  const f = String(space.folder ?? "").replace(/\/+$/, ""), d = String(folder ?? "").replace(/\/+$/, "");
+  if (!f || !d) return false;
+  return d === f || (!HOME.test(f) && d.slice(0, d.lastIndexOf("/")) === f);
 }
 
 // herdr-task's auto_prefix: the initials of the folder name's words (herdr-app-ttt -> HAT, up to
