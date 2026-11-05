@@ -69,14 +69,16 @@ if [ -n "$chat" ]; then
   done
   [ "$role" = coordinator ] && labels+=(--label herdr.role=coordinator)
 fi
+# The argv's words in cmd (a loop, not mapfile: macOS runs this with its bash 3.2).
+argvOf() { cmd=(); while IFS= read -r w; do cmd+=("$w"); done < <(jq -r '.[]' <<<"$argv"); }
 if [ -n "${HERDR_RESTART_RESUME:-}" ] && [ -n "$argv" ]; then
-  mapfile -t cmd < <(jq -r '.[]' <<<"$argv")
+  argvOf
   [ ${#cmd[@]} -gt 0 ] || exit 1
   new=$(hc run --bg --json --no-parent --cwd "$cwd" "${labels[@]}" --label "herdr.agent=$(basename "${cmd[0]}")" -- "${cmd[@]}" | jq -r '.address // empty')
 elif [ -z "$argv" ] && [ "$role" = coordinator ]; then
   new=$(hc run --bg --json --no-parent --cwd "$cwd" "${labels[@]}" assistant "$handoff" | jq -r .address)
 else
-  mapfile -t cmd < <(jq -r '.[]' <<<"$argv")
+  argvOf
   [ ${#cmd[@]} -gt 0 ] || exit 1
   key=$(basename "${cmd[0]}")
   # Codex runs its commands outside hc without --no-daemon.
