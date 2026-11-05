@@ -1517,6 +1517,32 @@ class Scheduled(unittest.TestCase):
             self.add("Typo", at="fry 9:00")
 
 
+class ReposSpace(unittest.TestCase):
+    """A repos space: a plain folder holding git repos (Scheduled's throwaway folder holds the repo "app").
+    Its tasks each work in one repo: add on the folder itself is refused with the repos to pass, and list
+    there lists each repo's tasks."""
+    setUp, run_cmd, add = Scheduled.setUp, Scheduled.run_cmd, Scheduled.add
+
+    def test_add_on_the_folder_names_its_repos(self):
+        with self.assertRaises(self.Fail) as e:
+            self.add("Fix it", folder=self.tmp)
+        self.assertIn("app", str(e.exception))
+        self.assertIn("--folder", str(e.exception))
+
+    def test_here_still_works_in_the_folder(self):
+        self.assertEqual(self.add("Tidy", folder=self.tmp, here=True)["mode"], "here")
+
+    def test_list_lists_each_repos_tasks(self):
+        self.add("Fix it", space="sp1")
+        out = self.run_cmd(self.commands.cmd_list, folder=self.tmp, all=False, archived=False)
+        self.assertEqual([(g["name"], [t["title"] for t in g["tasks"]]) for g in out], [("app", ["Fix it"])])
+
+    def test_only_a_plain_folder_with_repos_is_one(self):
+        self.assertEqual(self.store_mod.repos_in(self.tmp), [os.path.join(self.tmp, "app")])
+        self.assertEqual(self.store_mod.repos_in(self.folder), [])
+        self.assertEqual(self.store_mod.repos_in(self.store_mod.HOME), [])
+
+
 class FastOffIsSaid(unittest.TestCase):
     """SHEP-41: a worker with Fast off runs standard even when config.toml sets service_tier."""
 

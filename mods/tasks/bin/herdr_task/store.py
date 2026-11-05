@@ -30,6 +30,18 @@ def locate(path):
     return {"folder": path, "kind": "folder", "name": name, "common": None}
 
 
+def repos_in(folder):
+    """A repos space's repos: the git repos directly inside a plain folder (not home or /), sorted. Each of
+    its tasks works in one of them (--folder <repo> --space <space>); [] for any other folder."""
+    if folder in (HOME, "/"):
+        return []
+    try:
+        names = sorted(n for n in os.listdir(folder) if not n.startswith("."))
+    except OSError:
+        return []
+    return [os.path.join(folder, n) for n in names if os.path.exists(os.path.join(folder, n, ".git"))]
+
+
 def slug_of(folder):
     # Folders in home drop the home part: ~/dev/app -> dev-app, ~ -> home.
     rel = os.path.relpath(folder, HOME) if folder == HOME or folder.startswith(HOME + "/") else folder

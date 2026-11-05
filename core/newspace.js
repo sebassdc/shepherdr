@@ -19,6 +19,7 @@ export const WORDS = {
   makeRepo: "Make it a git repo",
   makeRepoWhy: "so each task gets its own worktree",
   isRepo: "A git repo: each task gets its own worktree",
+  isRepos: "A folder of git repos: each task works in one of them",
   create: "Create space",
   creating: "Creating…",
   cancel: "Cancel",
@@ -111,8 +112,13 @@ export function startFolder(at, recent, home) {
   return recent.find((r) => at === r || at.startsWith(r + "/")) ?? at;
 }
 
-// Whether "Make it a git repo" shows: a folder known not to be in a repo, not home or /.
-export const offersRepo = (folder, inRepo, home) => Boolean(folder) && folder !== home && folder !== "/" && inRepo === false;
+// Whether "Make it a git repo" shows: a folder known not to be in a repo, not home or /, and not a repos space
+// (git repos directly inside: each task works in one of them).
+export const offersRepo = (folder, inRepo, home, holdsRepos = false) =>
+  Boolean(folder) && folder !== home && folder !== "/" && inRepo === false && !holdsRepos;
+
+// Whether a folder's subfolders ({ repo } each, as service/spaces.ts folders lists them) make it a repos space.
+export const holdsRepos = (entries) => (entries ?? []).some((e) => e.repo);
 
 // What Herdr calls an unnamed space there: "Home" at home, else its repo's top folder, else the folder.
 export const placeName = (folder, top, home) => (folder === home ? "Home" : (top || folder).split("/").filter(Boolean).pop() ?? folder);

@@ -14,7 +14,7 @@ from .base import addon_off, Fail, hc_json, HOME, now, run, STORE
 from .settings import autopilot_layers, bare, read_settings, write_autopilot
 from .agents import agent_running, status_word
 from .launch import caller_labels, coordinator_in
-from .store import locate, read_list, Store, store_files
+from .store import locate, read_list, repos_in, Store, store_files
 from .output import say
 from .news import news_send, typing
 from .scheduler import ensure_scheduler
@@ -392,6 +392,15 @@ def folder_of(folder):
         return folder
 
 
+def repos_of_space(folder):
+    """A repos space's repos (a plain folder holding git repos), else []."""
+    try:
+        loc = locate(folder) if folder else None
+    except Fail:
+        return []
+    return repos_in(loc["folder"]) if loc and loc["kind"] == "folder" else []
+
+
 def space_info(space):
     """(name, task folder) of a space on this computer, from the window's list; (None, None) when
     the window doesn't know it."""
@@ -601,6 +610,11 @@ def message(space, a, reasons):
     aim = (f"Direction (set by the person, Shepherdr settings > Autopilot): {aim}" if aim else
            "Direction: none set. Work out what matters most from the project itself: its README, docs and goals, "
            "recent commits and merged tasks, open issues and PRs, and what the person asked for lately.")
+    repos = repos_of_space(a.get("folder"))
+    if repos:
+        aim += ("\nThis is a repos space: its project is each git repo inside its folder ("
+                + ", ".join(r.replace(HOME, "~", 1) for r in repos) + "). Look at each one, and give every task "
+                "--folder <its repo> --space <this space>.")
     body = (f"Autopilot wake: {why}, {when(now())}.\n"
             "You are on Autopilot in this space: you drive it forward and decide on your own; the person steers "
             "later. Never ask the person a question on a wake: make every call yourself (product and taste choices "

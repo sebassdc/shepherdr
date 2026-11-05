@@ -33,12 +33,14 @@ Split the ask into tasks. Each gets a short title for the person ("Fix login red
 
 Where tasks work: in a git repo each task gets its own worktree, unless the person's settings turn worktrees off for it; a folder without git works in the folder itself. `herdr-task config --json` says which (`worktrees`: true or false). In the folder itself, tasks share one checkout, so queue them smartly: for each task, work out which files it will touch (read the code first). Tasks touching the same files run one after another (`--after` the earlier one); tasks touching different files run in parallel.
 
+A repos space: the space's folder isn't a git repo but holds git repos directly inside it (`ls -d */.git`). Each task works in one of those repos: the one the person names, else the one the brief is about (ask when it isn't clear). Set `REPO` to it for that task's `add` and `start`; `--space "$SPACE"` keeps it in this space. `herdr-task add` refuses the folder itself and lists its repos; use `--here` only when the person says a task is about the folder itself. In the space's folder, `herdr-task list --json` lists every repo's tasks, one group per repo.
+
 ## Start the workers (one per task)
 
 Tasks are Herdr's, kept per folder outside the repo. Create and start them only with `herdr-task`, never by hand: it makes the worktree, the labels and the line that tells the worker how to finish. Workers don't report to you: Herdr sends you their news (below). Workers get no tab or pane (a space can run thousands): each runs as your hc child, labelled herdr.task, herdr.task.space=$SPACE and herdr.coordinator=$MYTAB, and the person reaches it through the Tasks panel. Agents herdr-task starts later (queued tasks, resume, fix, merge, automations) find you the same way.
 
 ```sh
-REPO=$(git rev-parse --show-toplevel)
+REPO=$(git rev-parse --show-toplevel)   # a repos space: the task's repo (above)
 A=$(herdr-task add "Add the API route" --prompt "<the full prompt>" --folder "$REPO" --json | jq -r .ref)
 B=$(herdr-task add "Use it in the page" --prompt "<the full prompt>" --after "$A" --folder "$REPO" --json | jq -r .ref)
 for ID in $A $B; do herdr-task start "$ID" --folder "$REPO" --space "$SPACE" --parent "$HC_TERMINAL_ID" --json; done

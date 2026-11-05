@@ -24,7 +24,7 @@ from .launch import (
     base_ref, brief, caller_labels, caller_space, current_base, default_space, folder_for, handoff, launch, name_tabs,
     own_path, parent_for, resume_argv, retag_tabs, tab_title, task_tabs,
 )
-from .store import is_task_list, locate, open_store, prefixes_in_use, read_list, Store, store_files
+from .store import is_task_list, locate, open_store, prefixes_in_use, read_list, repos_in, Store, store_files
 from .queues import after_refs, parse_after, queue_reason, set_after
 from .archive import unarchive
 from .output import line, minutes, say, view
@@ -47,7 +47,11 @@ def cmd_list(args):
     if args.all:
         folders = [d["folder"] for d in map(read_list, store_files()) if is_task_list(d)]
     else:
-        folders = [locate(args.folder)["folder"]]
+        loc = locate(args.folder)
+        # A repos space lists its repos' tasks, one group each, as --all does.
+        inside = repos_in(loc["folder"]) if loc["kind"] == "folder" else []
+        args.all = bool(inside)
+        folders = [locate(r)["folder"] for r in inside] or [loc["folder"]]
     groups = []
     for folder in folders:
         if not os.path.isdir(folder):
@@ -94,6 +98,13 @@ def cmd_add(args):
         with open(args.prompt_file) as f:
             prompt = f.read()
     at = scheduled_at(args)  # refused before anything is added
+    if not args.here:
+        loc = locate(args.folder)
+        inside = repos_in(loc["folder"]) if loc["kind"] == "folder" else []
+        if inside:
+            names = ", ".join(os.path.basename(r) for r in inside[:12]) + (", ..." if len(inside) > 12 else "")
+            raise Fail(f"{loc['folder']} is a folder of git repos: pass --folder <the repo this task works in> "
+                       f"({names}), or --here to work in the folder itself.")
     with open_store(args) as s:
         repo = s.loc["kind"] == "repo"
         if args.worktree and not repo:
