@@ -1637,7 +1637,7 @@ class ReviewAsAHelperAgent(unittest.TestCase):
         for words in (templates.WORKER_MD, worker):
             self.assertIn("--label herdr.role=reviewer", words)
             self.assertIn("herdr.task=$HERDR_BROWSER_TASK", words)
-            self.assertIn("codex --sandbox read-only --ask-for-approval never", words)
+            self.assertIn("codex --no-daemon --sandbox read-only --ask-for-approval never", words)
             self.assertIn("claude --permission-mode plan", words)
             self.assertIn("hc wait <its name>", words)
             self.assertNotIn("< /dev/null", words)
@@ -1657,6 +1657,164 @@ class ReviewAsAHelperAgent(unittest.TestCase):
             with open(os.path.join(d, "reviewer.md"), "w") as f:
                 f.write(templates.TEMPLATE_HEADS["reviewer"] + "My own words.")
             self.assertEqual(templates.instructions("reviewer"), "My own words.")
+
+
+class ReviewerCanRun(unittest.TestCase):
+    """A Codex reviewer that can't run is never started: one that isn't signed in here (the
+    scheduler's `codex login status`) gives way to the task's own CLI with plain words for the agent
+    and the person, and the reviewer's command runs without Codex's shared background server, whose
+    old sign-in failed every review turn ("access token could not be refreshed"). In memory."""
+
+    def setUp(self):
+        sys.path.insert(0, BIN)
+        from herdr_task import settings
+        self.settings = settings
+
+    def reviewer(self, codex, reviewer=None, agent="claude", model=None, check=False):
+        from unittest import mock
+        cfg = {"tasks": {"review_rounds": 3}, "reviewer": dict({"agent": reviewer} if reviewer else {}, **({"model": model} if model else {}))}
+        path = os.path.join(tempfile.mkdtemp(), "cli-check.json")
+        if codex:
+            with open(path, "w") as f:
+                json.dump({"machines": {"": {"claude": "ready", "codex": codex}}}, f)
+        with mock.patch.object(self.settings, "settings_for", lambda s, space: cfg), \
+                mock.patch.object(self.settings, "by_layer", lambda *a: "all"), \
+                mock.patch.object(self.settings, "CLI_CHECK", path), \
+                mock.patch.object(self.settings.shutil, "which", lambda x: "/usr/bin/" + x):
+            return next(x for x in self.settings.task_settings(None, {"id": 1, "mode": "worktree"}, argv=[agent], check_reviewer=check)
+                        if x["label"] == "Reviewer")
+
+    def test_fresh_sign_in_check_overrides_absent_or_stale_cache(self):
+        from unittest import mock
+        for cached in (None, "ready", "signed-out"):
+            for output in ("Not logged in", "Your access token could not be refreshed"):
+                with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", output)) as run:
+                    r = self.reviewer(cached, reviewer="codex", check=True)
+                self.assertEqual(r["value"]["agent"], "claude")
+                self.assertIn("`codex login`", r["text"])
+                self.assertIn("Tell the person", r["text"])
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(run.call_args.args[0], ["codex", "login", "status"])
+                self.assertEqual(run.call_args.kwargs["timeout"], 10)
+        with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "Logged in using ChatGPT")):
+            self.assertEqual(self.reviewer("signed-out", check=True)["value"]["agent"], "codex")
+
+    def test_missing_or_unreadable_login_does_not_start_codex(self):
+        from unittest import mock
+        for error in (FileNotFoundError(), subprocess.TimeoutExpired("codex", 10), OSError("denied")):
+            with mock.patch("subprocess.run", side_effect=error):
+                r = self.reviewer("ready", reviewer="codex", check=True)
+            self.assertEqual(r["value"]["agent"], "claude")
+        with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "unexpected output")):
+            self.assertEqual(self.reviewer("ready", check=True)["value"]["agent"], "claude")
+
+    def test_no_signed_in_codex_fallback_stops_the_check(self):
+        from unittest import mock
+        with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", "Not logged in")):
+            with self.assertRaisesRegex(self.settings.Fail, "codex login.*No reviewer started"):
+                self.reviewer("ready", reviewer="codex", agent="codex", check=True)
+
+    def test_worker_checks_before_launch_and_handles_auth_failure(self):
+        from herdr_task import templates
+        with open(os.path.join(ROOT, "templates", "worker.md")) as f:
+            worker = f.read()
+        for words in (worker, templates.WORKER_MD):
+            self.assertIn("reviewer-check", words)
+            self.assertIn("If the check fails, do not start", words)
+            self.assertIn("token-refresh", words)
+            self.assertIn("startup warnings alone", words)
+
+    def test_reviewer_check_command_returns_fallback_without_starting_it(self):
+        import argparse
+        import contextlib
+        import io
+        from unittest import mock
+        from herdr_task import commands, launch
+        task = {"id": 1, "mode": "worktree", "agents": [{"argv": ["claude"]}]}
+        store = Store([task])
+        cfg = {"tasks": {"review_rounds": 3}, "reviewer": {"agent": "codex", "model": "gpt-x"}}
+        out = io.StringIO()
+        with mock.patch.object(commands, "open_store", return_value=store), \
+                mock.patch.object(self.settings, "settings_for", return_value=cfg), \
+                mock.patch.object(self.settings, "by_layer", return_value=None), \
+                mock.patch.object(self.settings, "cli_here", return_value="ready"), \
+                mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", "Not logged in")) as run, \
+                contextlib.redirect_stdout(out):
+            commands.cmd_reviewer_check(argparse.Namespace(id="1", folder="/f", json=True))
+        row = json.loads(out.getvalue())
+        self.assertEqual(row["value"], {"agent": "claude", "model": None, "effort": None})
+        self.assertIn("`codex login`", row["text"])
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[0], ["codex", "login", "status"])
+        self.assertIn("reviewer-check", launch.OWN)
+
+    def test_unedited_worker_gets_the_preflight_instructions(self):
+        from unittest import mock
+        from herdr_task import templates
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "worker.md")
+            with open(path, "w") as f:
+                f.write(templates.TEMPLATE_HEADS["worker"] + templates.WORKER_MD_BEFORE_REVIEWER_CHECK)
+            with mock.patch.object(templates, "TEMPLATES", d):
+                self.assertEqual(templates.instructions("worker"), templates.WORKER_MD.strip())
+
+    def test_codex_signed_in_or_unknown_reviews(self):
+        for state in ("ready", None):
+            r = self.reviewer(state)
+            self.assertEqual(r["value"]["agent"], "codex")
+            self.assertEqual(r["text"], "codex (the other CLI)")
+        self.assertEqual(self.reviewer(None, reviewer="codex", model="gpt-x")["text"], "codex, model gpt-x")
+
+    def test_codex_signed_out_is_never_the_reviewer(self):
+        r = self.reviewer("signed-out")
+        self.assertEqual(r["value"], {"agent": "claude", "model": None, "effort": None})
+        self.assertIn("Codex isn't signed in here: run `codex login`, then ask for the review again", r["text"])
+        self.assertIn("Tell the person", r["text"])
+        # Set by the person, with a model for Codex: the fallback runs on its own CLI's model.
+        r = self.reviewer("signed-out", reviewer="codex", model="gpt-x")
+        self.assertEqual(r["value"], {"agent": "claude", "model": None, "effort": None})
+        self.assertNotIn("gpt-x", r["text"])
+        self.assertIsNone(r["by"])  # not the person's pick: it isn't theirs
+        self.assertEqual(self.reviewer("ready", reviewer="codex")["by"], "all")
+
+    def test_the_pick(self):
+        pick = self.settings.reviewer_pick
+        self.assertEqual(pick("codex", "claude", "ready"), ("codex", None))
+        self.assertEqual(pick("codex", "claude", None), ("codex", None))
+        self.assertEqual(pick("codex", "codex", "signed-out"), ("codex", None))  # it runs the task: signed in
+        self.assertEqual(pick("claude", "codex", "signed-out")[0], "codex")
+        self.assertIn("`claude auth login`", pick("claude", "codex", "signed-out")[1])
+        self.assertEqual(pick("gemini", "claude", "signed-out"), ("gemini", None))
+
+    def test_the_review_command_skips_the_shared_server(self):
+        from herdr_task import templates
+        with open(os.path.join(ROOT, "templates", "worker.md")) as f:
+            worker = f.read()
+        for words in (templates.WORKER_MD, worker):
+            self.assertIn("`codex --no-daemon --sandbox read-only --ask-for-approval never`", words)
+        self.assertIn(templates.WORKER_MD_BEFORE_NO_DAEMON, templates.OLD_WORKERS)  # an unedited old one gets today's
+
+    def test_startup_warnings_are_no_error(self):
+        """A Codex log with startup warnings and a turn that ends well is no provider cut; the
+        sign-in failure itself reads as Signed out."""
+        from herdr_task import provider
+        warn = [{"type": "event_msg", "payload": {"type": "warning", "message": f"MCP server {i} failed to start"}} for i in range(11)]
+        start = {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "u1"}}
+        said = {"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Findings: none"}]}}
+        done = {"type": "event_msg", "payload": {"type": "task_complete", "turn_id": "u1", "last_agent_message": "Findings: none"}}
+        failed = {"type": "event_msg", "timestamp": "2026-11-06T15:28:10Z", "payload": {"type": "task_complete", "turn_id": "u1", "error": {
+            "message": "Your access token could not be refreshed because you have since logged out or signed in to another account. "
+                       "Please sign in again.", "codex_error_info": "unauthorized"}}}
+        d = tempfile.mkdtemp()
+
+        def log(lines):
+            path = os.path.join(d, f"{len(os.listdir(d))}.jsonl")
+            with open(path, "w") as f:
+                f.write("".join(json.dumps(x) + "\n" for x in lines))
+            return path
+        self.assertIsNone(provider.provider_cut(log([*warn, start, *warn, said, done])))
+        cut = provider.provider_cut(log([*warn, start, failed]))
+        self.assertEqual(provider.provider_error(cut["text"], cut["code"], cut["status"])["reason"], "Signed out")
 
 
 class Store:

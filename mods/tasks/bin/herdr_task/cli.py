@@ -13,7 +13,7 @@ from .agents import LINE_MAX, SUMMARY_MAX
 from .launch import cmd_allow, name_tabs
 from .commands import (
     cmd_accept, cmd_add, cmd_alert, cmd_config, cmd_edit, cmd_fix, cmd_list, cmd_merge, cmd_ready,
-    cmd_resume, cmd_review, cmd_review_more, cmd_reviewed, cmd_rm, cmd_show, cmd_start, cmd_state, cmd_status,
+    cmd_resume, cmd_review, cmd_review_more, cmd_reviewed, cmd_reviewer_check, cmd_rm, cmd_show, cmd_start, cmd_state, cmd_status,
     cmd_switch, cmd_unarchive, cmd_where,
 )
 from .tick import cmd_tick
@@ -206,6 +206,7 @@ def main():
     when_opts(c)
     c = cmd("show", cmd_show, "one task")
     c.add_argument("--evidence", action="store_true", help="with what its Accept card shows: commits, changed files, checks and its proof")
+    cmd("reviewer-check", cmd_reviewer_check, "check Codex sign-in now and return the reviewer to start, with fallback guidance")
     c = cmd("start", cmd_start, "start a task's agent (no tab: an hc child of the space's coordinator)")
     agent_opts(c)
     c.add_argument("--space")
