@@ -472,20 +472,23 @@ def folder_files(folder):
     """The folder's changes beyond its commit as one fingerprint: tracked changes (git diff HEAD) and
     new files git doesn't ignore, with their content. None outside a git repo. Writes nothing."""
     ok, top, _ = git(folder, "rev-parse", "--show-toplevel")
-    ok_diff, diff, _ = git(top, "diff", "HEAD", "--binary") if ok else (False, "", "")
-    new = run(["git", "-C", top, "ls-files", "--others", "--exclude-standard", "-z"]) if ok else None
-    if not ok_diff or new is None or new.returncode:
+    if not ok:
         return None
-    h = hashlib.sha256(diff.encode())
-    for path in sorted(p for p in new.stdout.split("\0") if p):
-        h.update(b"\0" + path.encode() + b"\0")
-        full = os.path.join(top, path)
+    diff = subprocess.run(["git", "-C", top, "diff", "HEAD", "--binary"], capture_output=True)
+    new = subprocess.run(["git", "-C", top, "ls-files", "--others", "--exclude-standard", "-z"], capture_output=True)
+    if diff.returncode or new.returncode:
+        return None
+    h = hashlib.sha256(diff.stdout)
+    for path in sorted(p for p in new.stdout.split(b"\0") if p):
+        h.update(b"\0" + path + b"\0")
+        full = os.path.join(os.fsencode(top), path)
         try:
             if os.path.islink(full):
                 h.update(b"link\0" + hashlib.sha256(os.fsencode(os.readlink(full))).digest())
                 continue
             if not os.path.isfile(full):
                 return None
+            h.update(b"x" if os.stat(full).st_mode & 0o100 else b"-")
             content = hashlib.sha256()
             with open(full, "rb") as f:
                 for chunk in iter(lambda: f.read(1 << 20), b""):

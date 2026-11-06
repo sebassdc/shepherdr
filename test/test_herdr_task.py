@@ -1972,6 +1972,34 @@ class NothingOfItsOwnInTheFolder(unittest.TestCase):
         os.mkfifo(os.path.join(self.main, "pipe"))
         self.assertEqual(self.ready(), "ready")
 
+    def test_a_new_files_executable_mode_is_compared(self):
+        self.restart_with(**{"script.sh": "exit 0\n"})
+        os.chmod(os.path.join(self.main, "script.sh"), 0o755)
+        with self.assertRaises(self.commands.Fail):
+            self.ready()
+
+    def test_non_utf8_tracked_changes_are_compared(self):
+        path = os.path.join(self.main, "notes.md")
+        with open(path, "ab") as f:
+            f.write(b"\xe9\n")
+        self.restart_with()
+        self.assertEqual(self.ready(), "ready")
+        with open(path, "ab") as f:
+            f.write(b"more\n")
+        with self.assertRaises(self.commands.Fail):
+            self.ready()
+
+    def test_carriage_returns_in_untracked_names_are_compared(self):
+        path = os.path.join(self.main, "odd\rname.txt")
+        with open(path, "wb") as f:
+            f.write(b"draft\n")
+        self.restart_with()
+        self.assertEqual(self.ready(), "ready")
+        with open(path, "ab") as f:
+            f.write(b"more\n")
+        with self.assertRaises(self.commands.Fail):
+            self.ready()
+
     def test_a_folder_that_is_no_git_repo_keeps_the_gate(self):
         plain = os.path.join(self.root, "plain")
         os.makedirs(plain)
