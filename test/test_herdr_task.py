@@ -964,7 +964,7 @@ class BackToWork(unittest.TestCase):
     def test_required_approval_then_queue_then_merge(self):
         t = self.pr_task()
         t["auto_merge"] = "checks"
-        calls, done = self.queue_repo({"queued": True, "reason": None})
+        calls, done = self.queue_repo({"queued": True, "head": "abc", "reason": None})
         view = dict(self.green)
         with self.mock.patch.object(self.commands, "pr_view", lambda t: view), \
                 self.mock.patch.object(self.tick, "pr_view", lambda t: view):
@@ -998,11 +998,12 @@ class BackToWork(unittest.TestCase):
             with self.mock.patch.object(github, "gh", lambda *a, **k: (ok, out, "")):
                 return github.pr_queue(task)
         removed = {"nodes": [{"reason": "Required status check \"ci\" failed"}]}
-        self.assertEqual(answer({"isInMergeQueue": True, "autoMergeRequest": None, "timelineItems": {"nodes": []}}),
-                         {"queued": True, "reason": None})
+        self.assertEqual(answer({"isInMergeQueue": True, "autoMergeRequest": None, "timelineItems": {"nodes": []},
+                                 "mergeQueueEntry": {"headCommit": {"oid": "abc"}}}),
+                         {"queued": True, "head": "abc", "reason": None})
         self.assertEqual(answer({"isInMergeQueue": False, "autoMergeRequest": {"enabledAt": "x"}, "timelineItems": removed})["queued"], True)
         self.assertEqual(answer({"isInMergeQueue": False, "autoMergeRequest": None, "timelineItems": removed}),
-                         {"queued": False, "reason": 'Required status check "ci" failed'})
+                         {"queued": False, "head": None, "reason": 'Required status check "ci" failed'})
         self.assertIsNone(answer(None))
         self.assertIsNone(answer({"isInMergeQueue": True}, ok=False))
         with self.mock.patch.object(github, "gh", lambda *a, **k: (True, "not json", "")):
@@ -1010,12 +1011,27 @@ class BackToWork(unittest.TestCase):
 
     def test_a_pull_request_already_in_the_queue_counts_as_queued(self):
         t = self.pr_task()
-        calls, done = self.queue_repo({"queued": True, "reason": None})
+        calls, done = self.queue_repo({"queued": True, "head": "abc", "reason": None})
         gh = lambda *a, **k: (calls.append(a), (False, "", self.QUEUE_ERR if "--delete-branch" in a else "already queued"))[1]
         with self.mock.patch.object(self.commands, "gh", gh):
             self.commands.cmd_accept(self.args())
         self.assertEqual((t["state"], done, "attention" in t), ("ready", [], False))
         self.assertTrue(t["pr"]["queued"])
+
+    def test_a_failed_pinned_enqueue_never_accepts_a_different_or_unknown_queued_head(self):
+        t = self.pr_task()
+        queue = {"queued": True, "head": "different", "reason": None}
+        calls, done = self.queue_repo(queue)
+        def gh(*a, **k):
+            return False, "", self.QUEUE_ERR if "--delete-branch" in a else "head SHA does not match"
+        with self.mock.patch.object(self.commands, "gh", gh):
+            for head in ("different", None):
+                queue["head"] = head
+                with self.assertRaises(SystemExit):
+                    self.commands.cmd_accept(self.args())
+                self.assertIn("head SHA does not match", t["attention"])
+                self.assertNotIn("queued", t["pr"])
+                self.assertEqual((t["state"], done), ("ready", []))
 
     def test_a_base_without_a_merge_queue_merges_as_before(self):
         t = self.pr_task()
