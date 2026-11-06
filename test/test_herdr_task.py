@@ -1331,6 +1331,37 @@ class MergedOnlyWithOwnWork(unittest.TestCase):
         self.assertEqual(self.tick_once(), ("done", True))
 
 
+    # Its agent rebased its branch onto the remote base, ahead of the local one, and made no commits
+    # of its own: nothing to merge, never a pull request (GitHub refuses one with no commits).
+    def rebased_onto_origin(self):
+        self.git(self.main, "update-ref", "refs/remotes/origin/main", self.commit(self.main, "on GitHub"))
+        self.git(self.main, "reset", "-q", "--hard", "HEAD~1")  # local main behind its remote
+        self.git(self.task["worktree"], "rebase", "-q", "origin/main")
+
+    def test_ready_rebased_onto_origin_main_with_nothing_of_its_own_is_done(self):
+        self.rebased_onto_origin()
+        calls = self.github([])
+        self.assertEqual(self.ready_now(), ("done", False))
+        self.assertTrue(self.task.get("nothing_to_merge"))
+        self.assertNotIn(("pr", "create"), calls)
+
+    def test_ready_rebased_onto_origin_main_with_its_own_commits_opens_its_pull_request(self):
+        self.rebased_onto_origin()
+        self.change(self.task["worktree"], "reactions on the left")
+        self.github([])
+        with self.assertRaises(AssertionError):
+            self.ready_now()  # on to pr_open
+
+    def test_review_never_waits_on_a_branch_rebased_onto_origin_main_with_nothing_of_its_own(self):
+        from unittest import mock
+        self.rebased_onto_origin()
+        self.task.update(review_gate=True, head=self.git(self.task["worktree"], "rev-parse", "HEAD"))
+        with mock.patch.object(self.commands, "review_limits", lambda s, t: (True, 3)):
+            self.assertIsNone(self.commands.review_refusal(self.store, self.task, self.task["worktree"]))
+            self.change(self.task["worktree"], "reactions on the left")
+            self.task["head"] = self.git(self.task["worktree"], "rev-parse", "HEAD")
+            self.assertIn("isn't reviewed", self.commands.review_refusal(self.store, self.task, self.task["worktree"]))
+
 class TimeLeft(unittest.TestCase):
     """Every status gives the time left, a rough guess beats none (SHEP-13): the minutes show from
     the first one, one without --left asks for it, and every brief and template says so. In memory."""
