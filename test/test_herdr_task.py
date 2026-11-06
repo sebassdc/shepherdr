@@ -1403,10 +1403,10 @@ class MergedOnlyWithOwnWork(unittest.TestCase):
             self.addCleanup(p.stop)
         return calls
 
-    def ready_now(self):
+    def ready_now(self, review=False):
         import argparse
         from unittest import mock
-        with mock.patch.object(self.commands, "review_refusal", lambda *a: None), \
+        with mock.patch.object(self.commands, "review_limits", lambda *a: (review, 3)), \
                 mock.patch.object(self.commands, "find_proof", lambda *a: None), \
                 mock.patch.object(self.commands, "task_settings", lambda *a: []), \
                 mock.patch.object(self.commands, "ready_turns", lambda *a: {}), \
@@ -1414,6 +1414,12 @@ class MergedOnlyWithOwnWork(unittest.TestCase):
             self.commands.cmd_ready(argparse.Namespace(id="SHEP-1", json=True, folder=None, summary="Done.", details=None,
                                                        proof=None, agents_md=None))
         return self.task["state"], bool(self.task.get("merged"))
+
+    def test_ready_with_no_own_commits_and_review_on_closes_as_nothing_to_merge(self):
+        self.task["review_gate"] = True
+        self.assertEqual(self.ready_now(review=True), ("done", False))
+        self.assertTrue(self.task["nothing_to_merge"])
+        self.assertFalse(self.task.get("reviews"))
 
     def test_ready_after_its_pull_request_squash_merged_is_done(self):
         tip = self.change(self.task["worktree"], "reactions on the left")
@@ -1825,7 +1831,7 @@ class AutomationSettings(unittest.TestCase):
         self.auto("add", title="PR sweep", every="hourly", set=["review=off"])
         self.assertEqual(self.run_task()["set"], {"review": "off"})
         v = self.auto("edit", id="A1", set=["review.rounds=1", "reviewer.effort=low"])
-        self.assertEqual(v["set"], {"review": "off", "review_rounds": 1})
+        self.assertEqual((v["set"], v["reviewer_effort"]), ({"review": "off", "review_rounds": 1}, "low"))
         t = self.run_task()
         self.assertEqual((t["set"], t["reviewer_effort"]), ({"review": "off", "review_rounds": 1}, "low"))
         self.auto("edit", id="A1", set=["review=", "review.rounds=default", "reviewer.effort="])
@@ -1893,8 +1899,8 @@ class NothingOfItsOwnInTheFolder(unittest.TestCase):
         return self.task["state"]
 
     def test_ready_with_nothing_changed_needs_no_review_round(self):
-        self.assertEqual(self.task["here_start"], self.git(self.main, "rev-parse", "HEAD"))
         self.assertEqual(self.ready(), "ready")
+        self.assertEqual(self.task["here_start"], self.git(self.main, "rev-parse", "HEAD"))
         self.assertNotIn("review_out", self.task)
 
     def test_a_commit_of_its_own_still_needs_a_review_round(self):
@@ -1909,6 +1915,62 @@ class NothingOfItsOwnInTheFolder(unittest.TestCase):
             f.write("more\n")
         with self.assertRaises(self.commands.Fail):
             self.ready()
+
+    def test_a_new_file_still_needs_a_review_round(self):
+        with open(os.path.join(self.main, "report.md"), "w") as f:
+            f.write("its report\n")
+        with self.assertRaises(self.commands.Fail):
+            self.ready()
+
+    def restart_with(self, **files):
+        """The person's own work in progress was there before it started."""
+        for path, text in files.items():
+            with open(os.path.join(self.main, path), "w") as f:
+                f.write(text)
+        for k in ("here_start", "here_files"):
+            self.task.pop(k, None)
+        self.commands.begin(self.store, self.task, ["claude"], "sp1")
+
+    def test_the_persons_own_changes_from_before_it_started_dont_count(self):
+        self.restart_with(**{"notes.md": "wip\n", "draft.md": "wip\n"})
+        self.assertEqual(self.ready(), "ready")
+
+    def test_a_change_to_a_file_already_new_at_start_still_needs_a_review_round(self):
+        draft = os.path.join(self.main, "draft.md")
+        self.restart_with(**{"draft.md": "wip\n"})
+        with open(draft, "a") as f:
+            f.write("its work\n")
+        with self.assertRaises(self.commands.Fail):
+            self.ready()
+
+    def test_a_file_name_starting_with_space_is_compared(self):
+        self.restart_with(**{" draft.md": "wip\n"})
+        self.assertEqual(self.ready(), "ready")
+        with open(os.path.join(self.main, " draft.md"), "w") as f:
+            f.write("changed\n")
+        with self.assertRaises(self.commands.Fail):
+            self.ready()
+
+    def test_a_new_symlink_target_is_compared(self):
+        link = os.path.join(self.main, "link")
+        os.symlink("missing-before", link)
+        self.restart_with()
+        self.assertEqual(self.ready(), "ready")
+        os.unlink(link)
+        os.symlink("missing-after", link)
+        with self.assertRaises(self.commands.Fail):
+            self.ready()
+
+    def test_an_unreadable_new_file_keeps_the_gate(self):
+        from unittest import mock
+        self.restart_with(**{"draft.md": "wip\n"})
+        with mock.patch("builtins.open", side_effect=PermissionError("denied")):
+            with self.assertRaises(self.commands.Fail):
+                self.ready()
+
+    def test_a_named_pipe_is_not_git_work_and_is_never_read(self):
+        os.mkfifo(os.path.join(self.main, "pipe"))
+        self.assertEqual(self.ready(), "ready")
 
     def test_a_folder_that_is_no_git_repo_keeps_the_gate(self):
         plain = os.path.join(self.root, "plain")

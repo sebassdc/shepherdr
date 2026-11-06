@@ -1,6 +1,7 @@
 """The task commands: add, start, status, ready, accept, merge and the rest."""
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -273,10 +274,11 @@ def begin(s, t, argv, space, parent=None):
     if t.get("mode") == "worktree" and not t.get("worktree") and not worktrees_on(s, space):
         t["mode"] = "here"
     if folder_for(s, t) == s.loc["folder"] and "here_start" not in t:
-        # In the folder itself: the commit it starts at, so ready can tell it changed nothing (review_refusal).
+        # In the folder itself: its commit and changes as it starts, so ready can tell it changed nothing (review_refusal).
         ok, head, _ = git(s.loc["folder"], "rev-parse", "HEAD")
-        if ok and head:
-            t["here_start"] = head
+        files = folder_files(s.loc["folder"]) if ok and head else None
+        if files:
+            t["here_start"], t["here_files"] = head, files
     parent = parent_for(parent, space)
     return launch(s, t, argv, space, brief(s, t, parent, space, argv), parent=parent)
 
@@ -466,18 +468,44 @@ def review_refusal(s, t, wt):
             f"ready at), then run ready again. {rounds - rounds_used(t)} of {rounds} rounds left.")
 
 
+def folder_files(folder):
+    """The folder's changes beyond its commit as one fingerprint: tracked changes (git diff HEAD) and
+    new files git doesn't ignore, with their content. None outside a git repo. Writes nothing."""
+    ok, top, _ = git(folder, "rev-parse", "--show-toplevel")
+    ok_diff, diff, _ = git(top, "diff", "HEAD", "--binary") if ok else (False, "", "")
+    new = run(["git", "-C", top, "ls-files", "--others", "--exclude-standard", "-z"]) if ok else None
+    if not ok_diff or new is None or new.returncode:
+        return None
+    h = hashlib.sha256(diff.encode())
+    for path in sorted(p for p in new.stdout.split("\0") if p):
+        h.update(b"\0" + path.encode() + b"\0")
+        full = os.path.join(top, path)
+        try:
+            if os.path.islink(full):
+                h.update(b"link\0" + hashlib.sha256(os.fsencode(os.readlink(full))).digest())
+                continue
+            if not os.path.isfile(full):
+                return None
+            content = hashlib.sha256()
+            with open(full, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    content.update(chunk)
+            h.update(b"file\0" + content.digest())
+        except OSError:
+            return None
+    return h.hexdigest()
+
+
 def unchanged_here(s, t, wt):
     """A task in the folder itself changed nothing since it started: the folder is on the commit it
-    started at, with nothing tracked changed. Unknown (a worktree task, no git repo, or started before
-    this was kept): False, so review still waits."""
+    started at, with the same changes as then (the person's own work in progress counts as theirs).
+    Unknown (a worktree task, no git repo, or started before this was kept): False, so review still
+    waits. Another task committing in the same folder meanwhile makes it wait too (safe side)."""
     start, main = t.get("here_start"), s.loc["folder"]
-    if wt or not start:
+    if wt or not start or not t.get("here_files"):
         return False
     ok, head, _ = git(main, "rev-parse", "HEAD")
-    if not ok or head != start:
-        return False
-    ok, changed, _ = git(main, "status", "--porcelain", "--untracked-files=no")
-    return ok and not changed
+    return ok and head == start and folder_files(main) == t["here_files"]
 
 
 def cmd_reviewed(args):
