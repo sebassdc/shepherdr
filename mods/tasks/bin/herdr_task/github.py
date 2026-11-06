@@ -38,6 +38,12 @@ def remote_of(main):
     return "origin" if "origin" in names else (names[0] if names else "origin")
 
 
+def in_base_here_or_remote(main, commit, base):
+    """The commit is in the base branch here or on its remote (a branch rebased onto origin/main
+    while main here is behind it holds nothing the base doesn't)."""
+    return any(git(main, "merge-base", "--is-ancestor", commit, ref)[0] for ref in (base, f"refs/remotes/{remote_of(main)}/{base}"))
+
+
 def pr_open(s, task, repo, summary=None):
     """Pushes the task's branch and opens its pull request (or keeps the open one, also one opened
     by hand or by its agent for the branch: SHEP-13's "already exists")."""
@@ -227,8 +233,7 @@ def own_work(s, task):
         return None
     ok, tip, _ = git(main, "rev-parse", "--verify", "--quiet", f"refs/heads/{br}")
     tip = tip if ok and tip else task.get("head")
-    if tip and tip != start and tip != task.get("own") and not any(
-            git(main, "merge-base", "--is-ancestor", tip, ref)[0] for ref in (base, f"refs/remotes/{remote_of(main)}/{base}")):
+    if tip and tip != start and tip != task.get("own") and not in_base_here_or_remote(main, tip, base):
         task["own"] = tip
         s.dirty = True
     return task.get("own")
