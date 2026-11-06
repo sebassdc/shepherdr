@@ -89,9 +89,12 @@ export function entryFor(k, known) {
   return known.find((a) => a.key === k.program?.key) ?? known.find((a) => base(a.run?.[0]) === base(k.foreground?.argv?.[0] ?? k.argv?.[0])) ?? null;
 }
 
-// The helper scripts run detached: the menu that starts one closes at once.
+// The helper scripts run detached: the menu that starts one closes at once. macOS has no setsid:
+// there nohup in a job of its own (set -m), so neither a hangup nor a kill of the caller's group ends it.
+const DETACH = 'if command -v setsid >/dev/null; then setsid -f bash "$0" "$@" >/dev/null 2>&1 </dev/null; ' +
+  'else set -m; nohup bash "$0" "$@" >/dev/null 2>&1 </dev/null & fi';
 function script(name, args) {
-  return exec("bash", ["-c", 'setsid -f bash "$0" "$@" >/dev/null 2>&1 </dev/null', `${appHome()}/mods/coordinator/${name}.sh`, ...args]);
+  return exec("bash", ["-c", DETACH, `${appHome()}/mods/coordinator/${name}.sh`, ...args]);
 }
 
 // Where a space's coordinator works: its focused (else first) terminal's folder.
