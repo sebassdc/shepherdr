@@ -272,7 +272,11 @@ def begin(s, t, argv, space, parent=None):
         t.pop(k, None)
     if t.get("mode") == "worktree" and not t.get("worktree") and not worktrees_on(s, space):
         t["mode"] = "here"
-    folder_for(s, t)
+    if folder_for(s, t) == s.loc["folder"] and "here_start" not in t:
+        # In the folder itself: the commit it starts at, so ready can tell it changed nothing (review_refusal).
+        ok, head, _ = git(s.loc["folder"], "rev-parse", "HEAD")
+        if ok and head:
+            t["here_start"] = head
     parent = parent_for(parent, space)
     return launch(s, t, argv, space, brief(s, t, parent, space, argv), parent=parent)
 
@@ -445,7 +449,7 @@ def review_refusal(s, t, wt):
     on, rounds = review_limits(s, t)
     if not on or not t.get("review_gate"):
         return None
-    if wt and t.get("start") and in_base(s, t):
+    if (in_base(s, t) if wt and t.get("start") else unchanged_here(s, t, wt)):
         return None  # no commits of its own: nothing to review (nothing to merge)
     revs = [r for r in t.get("reviews") or [] if r.get("result") in REVIEWED and (r.get("at") or 0) >= (t.get("started") or 0)]
     head = t.get("head") if wt else None
@@ -460,6 +464,20 @@ def review_refusal(s, t, wt):
     return (f"Review is on and {what} isn't reviewed. Have it reviewed as your brief says, fix what must be fixed, record the "
             f"round with `{ht} reviewed {ref} --folder {folder} --report \"<findings, a line>\"` (on the commit you'd say "
             f"ready at), then run ready again. {rounds - rounds_used(t)} of {rounds} rounds left.")
+
+
+def unchanged_here(s, t, wt):
+    """A task in the folder itself changed nothing since it started: the folder is on the commit it
+    started at, with nothing tracked changed. Unknown (a worktree task, no git repo, or started before
+    this was kept): False, so review still waits."""
+    start, main = t.get("here_start"), s.loc["folder"]
+    if wt or not start:
+        return False
+    ok, head, _ = git(main, "rev-parse", "HEAD")
+    if not ok or head != start:
+        return False
+    ok, changed, _ = git(main, "status", "--porcelain", "--untracked-files=no")
+    return ok and not changed
 
 
 def cmd_reviewed(args):

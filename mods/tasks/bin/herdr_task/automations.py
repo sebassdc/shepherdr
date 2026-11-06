@@ -13,7 +13,7 @@ import time
 
 from .base import ENTRY, Fail, guard, hc_json, now, STORE
 from .when import parse_at
-from .settings import bare, settings_for, worker_argv, worktrees_on
+from .settings import bare, set_opts, settings_for, worker_argv, worktrees_on
 from .agents import agent_running, live_agents, starting, status_of, task_status
 from .sessions import session_of
 from .launch import default_space
@@ -205,7 +205,7 @@ def find_auto(s, ref):
 
 
 def auto_view(s, a):
-    v = {k: a.get(k) for k in ("id", "title", "prompt", "mode", "agent", "on", "match", "space", "paused",
+    v = {k: a.get(k) for k in ("id", "title", "prompt", "mode", "agent", "set", "on", "match", "space", "paused",
                                 "next_run", "last_run", "last_task", "last_error", "runs", "created")}
     # machine: None here; herdr-task --on <machine> names it (cli.remote), so a list across machines says whose it is
     v.update(ref=auto_ref(s, a), **{"from": from_text(a["from"]) if a.get("from") else None}, folder=s.loc["folder"], machine=None, prefix=s.prefix, every=(a.get("every") or {}).get("text"),
@@ -246,8 +246,8 @@ def set_auto_fields(s, a, args, adding=False):
                 a.pop("from", None)
             else:
                 a["warning"] = watch_from(s, a)
-    if args.agent:
-        a["agent"] = args.agent
+    # --agent and --set pairs, as add takes them: kept on the automation, copied onto each task it adds (fire)
+    set_opts(a, args)
     if args.here or args.worktree:
         if args.worktree and s.loc["kind"] != "repo":
             raise Fail("Worktrees need a git repo.")
@@ -359,8 +359,9 @@ def fire(s, a, why, brief=None):
     space = a.get("space")
     t = s.new(a["title"], prompt, a.get("mode") or ("worktree" if worktrees_on(s, space) else "here"))
     t["automation"] = a["id"]
-    if a.get("agent"):
-        t["agent"] = a["agent"]
+    for k in ("agent", "set", "model", "effort", "reviewer", "reviewer_model", "reviewer_effort"):
+        if a.get(k):
+            t[k] = dict(a[k]) if k == "set" else a[k]
     if space:
         # kept from the start, as add does: queued, it is still its space's; its branch follows that space's settings
         t["space"] = bare(space)
