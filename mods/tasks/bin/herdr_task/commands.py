@@ -1,6 +1,7 @@
 """The task commands: add, start, status, ready, accept, merge and the rest."""
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -19,7 +20,7 @@ from .agents import (
     agent_running, busy_again, detail, fit, LINE_MAX, live_agents, ready_turns, STATUSES, SUMMARY_MAX, WORKING_AGAIN,
 )
 from .sessions import refresh_sessions
-from .github import already_merged, finish, gh, github, in_base_here_or_remote, merged_here, own_work, pr_adopt, pr_open, pr_pending, pr_problem, pr_view, pr_waits, update_main, watch_main
+from .github import already_merged, finish, gh, github, in_base_here_or_remote, merged_here, only_merged_base, own_work, pr_adopt, pr_open, pr_pending, pr_problem, pr_view, pr_waits, update_main, watch_main
 from .launch import (
     base_ref, brief, caller_labels, caller_space, current_base, default_space, folder_for, handoff, launch, name_tabs,
     own_path, parent_for, resume_argv, retag_tabs, set_branch, tab_title, task_tabs,
@@ -211,6 +212,15 @@ def set_notes(t, args):
             t.pop(f"{which}_notes", None)
 
 
+def cmd_reviewer_check(args):
+    with open_store(args, write=False) as s:
+        rows = task_settings(s, s.find(args.id), check_reviewer=True)
+    reviewer = next((x for x in rows if x["label"] == "Reviewer"), None)
+    if reviewer is None:
+        raise Fail("Review is off. No reviewer started.")
+    say(args, reviewer, "Reviewer: " + reviewer["text"])
+
+
 def cmd_show(args):
     with open_store(args) as s:
         t = s.find(args.id)
@@ -272,7 +282,12 @@ def begin(s, t, argv, space, parent=None):
         t.pop(k, None)
     if t.get("mode") == "worktree" and not t.get("worktree") and not worktrees_on(s, space):
         t["mode"] = "here"
-    folder_for(s, t)
+    if folder_for(s, t) == s.loc["folder"] and "here_start" not in t:
+        # In the folder itself: its commit and changes as it starts, so ready can tell it changed nothing (review_refusal).
+        ok, head, _ = git(s.loc["folder"], "rev-parse", "HEAD")
+        files = folder_files(s.loc["folder"]) if ok and head else None
+        if files:
+            t["here_start"], t["here_files"] = head, files
     parent = parent_for(parent, space)
     return launch(s, t, argv, space, brief(s, t, parent, space, argv), parent=parent)
 
@@ -445,11 +460,14 @@ def review_refusal(s, t, wt):
     on, rounds = review_limits(s, t)
     if not on or not t.get("review_gate"):
         return None
-    if wt and t.get("start") and in_base(s, t):
+    if (in_base(s, t) if wt and t.get("start") else unchanged_here(s, t, wt)):
         return None  # no commits of its own: nothing to review (nothing to merge)
     revs = [r for r in t.get("reviews") or [] if r.get("result") in REVIEWED and (r.get("at") or 0) >= (t.get("started") or 0)]
     head = t.get("head") if wt else None
-    if (any(r.get("head") == head for r in revs) if wt else bool(revs)):
+    base = t.get("base") or "main"
+    # A reviewed commit with only clean merges of the base after it (a branch kept up to date) is reviewed.
+    if (any(r.get("head") == head or only_merged_base(s.loc["folder"], r.get("head"), head, base) for r in revs)
+            if wt else bool(revs)):
         return None
     ref, ht, folder = s.ref(t), own_path(), shlex.quote(s.loc["folder"])
     what = f"your final commit {head[:7]}" if head else "this task's work"
@@ -459,7 +477,51 @@ def review_refusal(s, t, wt):
                 f"it, and end your turn: only your Assistant can add a round (herdr-task review-more {ref}).")
     return (f"Review is on and {what} isn't reviewed. Have it reviewed as your brief says, fix what must be fixed, record the "
             f"round with `{ht} reviewed {ref} --folder {folder} --report \"<findings, a line>\"` (on the commit you'd say "
-            f"ready at), then run ready again. {rounds - rounds_used(t)} of {rounds} rounds left.")
+            f"ready at), then run ready again. (A clean merge of {base} after a reviewed commit needs no round; one with "
+            f"conflicts resolved or other changes does.) {rounds - rounds_used(t)} of {rounds} rounds left.")
+
+
+def folder_files(folder):
+    """The folder's changes beyond its commit as one fingerprint: tracked changes (git diff HEAD) and
+    new files git doesn't ignore, with their content. None outside a git repo. Writes nothing."""
+    ok, top, _ = git(folder, "rev-parse", "--show-toplevel")
+    if not ok:
+        return None
+    diff = subprocess.run(["git", "-C", top, "diff", "HEAD", "--binary"], capture_output=True)
+    new = subprocess.run(["git", "-C", top, "ls-files", "--others", "--exclude-standard", "-z"], capture_output=True)
+    if diff.returncode or new.returncode:
+        return None
+    h = hashlib.sha256(diff.stdout)
+    for path in sorted(p for p in new.stdout.split(b"\0") if p):
+        h.update(b"\0" + path + b"\0")
+        full = os.path.join(os.fsencode(top), path)
+        try:
+            if os.path.islink(full):
+                h.update(b"link\0" + hashlib.sha256(os.fsencode(os.readlink(full))).digest())
+                continue
+            if not os.path.isfile(full):
+                return None
+            h.update(b"x" if os.stat(full).st_mode & 0o100 else b"-")
+            content = hashlib.sha256()
+            with open(full, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    content.update(chunk)
+            h.update(b"file\0" + content.digest())
+        except OSError:
+            return None
+    return h.hexdigest()
+
+
+def unchanged_here(s, t, wt):
+    """A task in the folder itself changed nothing since it started: the folder is on the commit it
+    started at, with the same changes as then (the person's own work in progress counts as theirs).
+    Unknown (a worktree task, no git repo, or started before this was kept): False, so review still
+    waits. Another task committing in the same folder meanwhile makes it wait too (safe side)."""
+    start, main = t.get("here_start"), s.loc["folder"]
+    if wt or not start or not t.get("here_files"):
+        return False
+    ok, head, _ = git(main, "rev-parse", "HEAD")
+    return ok and head == start and folder_files(main) == t["here_files"]
 
 
 def cmd_reviewed(args):

@@ -4,8 +4,8 @@ import json
 import os
 import re
 
-from .base import APP_HOME, git, hc_json, now, run, STORE
-from .settings import AGENTS, argv_for, settings_for
+from .base import APP_HOME, git, hc_json, now, run
+from .settings import AGENTS, argv_for, CLI_CHECK, settings_for
 from .agents import fit, from_person, log_tail, said
 from .provider import provider_cut, provider_error
 from .launch import brief, launch, parent_for
@@ -18,7 +18,6 @@ from .launch import brief, launch, parent_for
 # that can't be read leaves that CLI unknown (None), never signed out. Settings reads the file to
 # warn about a Backup that is missing or signed out.
 
-CLI_CHECK = os.path.join(os.path.dirname(STORE), "cli-check.json")
 CHECK_EVERY = 15 * 60000
 CHECK = r"""
 limit=; if command -v timeout >/dev/null 2>&1; then limit='timeout 10'; fi

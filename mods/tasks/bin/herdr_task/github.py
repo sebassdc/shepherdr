@@ -44,6 +44,25 @@ def in_base_here_or_remote(main, commit, base):
     return any(git(main, "merge-base", "--is-ancestor", commit, ref)[0] for ref in (base, f"refs/remotes/{remote_of(main)}/{base}"))
 
 
+def only_merged_base(main, reviewed, tip, base):
+    """Everything after the reviewed commit is merges of its base branch (here or on its remote)
+    that add nothing of their own (a strict "branch up to date" rule): every commit after it on the
+    branch's first-parent line is a merge from the base, and the tip's tree is exactly merging the
+    reviewed commit with the newest base commit merged, as landed() checks. A merge with conflicts,
+    any other change, or a commit of its own is new work to review."""
+    if not (reviewed and tip) or reviewed == tip:
+        return False
+    ok, out, _ = git(main, "rev-list", "--first-parent", "--parents", f"{reviewed}..{tip}")
+    rows = [line.split() for line in out.splitlines()] if ok else []
+    if not rows or len(rows[-1]) < 2 or rows[-1][1] != reviewed:
+        return False  # the reviewed commit isn't on the tip's own line (rebased, or merged into another branch)
+    if any(len(r) < 3 or not all(in_base_here_or_remote(main, p, base) for p in r[2:]) for r in rows):
+        return False
+    ok, tree, _ = git(main, "merge-tree", "--write-tree", rows[0][-1], reviewed)  # fails on a conflict
+    has, have, _ = git(main, "rev-parse", "--verify", "--quiet", f"{tip}^{{tree}}")
+    return bool(ok and has and tree and tree.split()[0] == have)
+
+
 def pr_open(s, task, repo, summary=None):
     """Pushes the task's branch and opens its pull request (or keeps the open one, also one opened
     by hand or by its agent for the branch: SHEP-13's "already exists")."""

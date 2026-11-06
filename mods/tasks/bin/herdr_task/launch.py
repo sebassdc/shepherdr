@@ -28,7 +28,7 @@ from .browsers import browser_line, browser_path
 # without touching the person's CLI settings: Claude Code in the --settings it gets at launch,
 # Codex through a PermissionRequest hook given with -c (`herdr-task _allow` answers it).
 
-OWN = ["ready", "reviewed", "status", "alert", "feedback", "show", "list", "where"]
+OWN = ["ready", "reviewed", "reviewer-check", "status", "alert", "feedback", "show", "list", "where"]
 # herdr-secret's agent commands (~/.config/herdr-app/bin/herdr-secret): asking for a secret and
 # using one by name never ask either, as Shepherdr's secret commands. Written by its full path or
 # its bare name. Reviewers get none (launch() skips own_argv for them; herdr-secret refuses them).
@@ -313,6 +313,8 @@ def closing_line(s, task, parent=None, argv=None):
             f"about setting up or testing this repo that its AGENTS.md lacks). The person accepts it from there; never mark it done yourself.")
     on, rounds = review_limits(s, task)
     if on:
+        text += (f" Immediately before starting a reviewer, run `{ht} reviewer-check {s.ref(task)} "
+                 f"--folder {shlex.quote(s.loc['folder'])}` and use its Reviewer line, overriding the earlier Settings block.")
         text += (f" Review is on: after each review round, record it on the commit it reviewed with `{ht} reviewed {s.ref(task)} "
                  f"--folder {shlex.quote(s.loc['folder'])} --report \"<its findings in a line>\"` (at most {rounds} rounds); "
                  f"ready refuses a final commit no round was recorded on.")

@@ -1489,10 +1489,10 @@ class MergedOnlyWithOwnWork(unittest.TestCase):
             self.addCleanup(p.stop)
         return calls
 
-    def ready_now(self):
+    def ready_now(self, review=False):
         import argparse
         from unittest import mock
-        with mock.patch.object(self.commands, "review_refusal", lambda *a: None), \
+        with mock.patch.object(self.commands, "review_limits", lambda *a: (review, 3)), \
                 mock.patch.object(self.commands, "find_proof", lambda *a: None), \
                 mock.patch.object(self.commands, "task_settings", lambda *a: []), \
                 mock.patch.object(self.commands, "ready_turns", lambda *a: {}), \
@@ -1500,6 +1500,12 @@ class MergedOnlyWithOwnWork(unittest.TestCase):
             self.commands.cmd_ready(argparse.Namespace(id="SHEP-1", json=True, folder=None, summary="Done.", details=None,
                                                        proof=None, agents_md=None))
         return self.task["state"], bool(self.task.get("merged"))
+
+    def test_ready_with_no_own_commits_and_review_on_closes_as_nothing_to_merge(self):
+        self.task["review_gate"] = True
+        self.assertEqual(self.ready_now(review=True), ("done", False))
+        self.assertTrue(self.task["nothing_to_merge"])
+        self.assertFalse(self.task.get("reviews"))
 
     def test_ready_after_its_pull_request_squash_merged_is_done(self):
         tip = self.change(self.task["worktree"], "reactions on the left")
@@ -1577,6 +1583,101 @@ class MergedOnlyWithOwnWork(unittest.TestCase):
             self.task["head"] = self.git(self.task["worktree"], "rev-parse", "HEAD")
             self.assertIn("isn't reviewed", self.commands.review_refusal(self.store, self.task, self.task["worktree"]))
 
+    # A reviewed commit, then the base merged into the branch (a strict "up to date" rule): a clean
+    # merge adds nothing of its own, so it costs no review round; a conflict resolved by hand or an
+    # own commit still does.
+    def reviewed_then(self, then):
+        from unittest import mock
+        wt = self.task["worktree"]
+        reviewed = self.change(wt, "reactions on the left")
+        self.task.update(review_gate=True, reviews=[{"round": 1, "result": "report", "head": reviewed, "at": 1}])
+        then(wt)
+        self.task["head"] = self.git(wt, "rev-parse", "HEAD")
+        with mock.patch.object(self.commands, "review_limits", lambda s, t: (True, 3)):
+            return self.commands.review_refusal(self.store, self.task, wt)
+
+    def other_task_merged(self, name="other.txt", words="another task"):
+        with open(os.path.join(self.main, name), "w") as f:
+            f.write(words)
+        self.git(self.main, "add", name)
+        return self.commit(self.main, "another task merged")
+
+    def test_a_clean_merge_from_main_after_review_needs_no_round(self):
+        def merge(wt):
+            self.other_task_merged()
+            self.git(wt, "merge", "-q", "--no-edit", "main")
+            self.other_task_merged("third.txt")
+            self.git(wt, "merge", "-q", "--no-edit", "main")  # twice: main moved again
+        self.assertIsNone(self.reviewed_then(merge))
+
+    def test_a_clean_merge_from_origin_main_after_review_needs_no_round(self):
+        def merge(wt):
+            self.git(self.main, "update-ref", "refs/remotes/origin/main", self.other_task_merged())
+            self.git(self.main, "reset", "-q", "--hard", "HEAD~1")  # local main behind its remote
+            self.git(wt, "merge", "-q", "--no-edit", "origin/main")
+        self.assertIsNone(self.reviewed_then(merge))
+
+    def test_ready_after_a_clean_merge_from_main_goes_on_without_a_round(self):
+        import argparse
+        from unittest import mock
+        self.reviewed_then(lambda wt: (self.other_task_merged(), self.git(wt, "merge", "-q", "--no-edit", "main")))
+        self.github([])
+        with mock.patch.object(self.commands, "review_limits", lambda s, t: (True, 3)), \
+                mock.patch.object(self.commands, "find_proof", lambda *a: None), \
+                mock.patch.object(self.commands, "task_settings", lambda *a: []), \
+                mock.patch.object(self.commands, "ready_turns", lambda *a: {}), \
+                mock.patch.object(self.commands, "pr_open", lambda *a: (_ for _ in ()).throw(AssertionError("a pull request opened"))):
+            with self.assertRaisesRegex(AssertionError, "a pull request opened"):  # past the review gate
+                self.commands.cmd_ready(argparse.Namespace(id="SHEP-1", json=True, folder=None, summary="Done.", details=None,
+                                                           proof=None, agents_md=None))
+        self.assertEqual(len(self.task["reviews"]), 1)
+
+    def test_a_merge_with_a_conflict_resolved_by_hand_still_needs_review(self):
+        def merge(wt):
+            self.other_task_merged("reactions.txt", "reactions on the right")
+            subprocess.run(["git", "-C", wt, "merge", "-q", "--no-edit", "main"], capture_output=True)  # conflicts
+            with open(os.path.join(wt, "reactions.txt"), "w") as f:
+                f.write("reactions on both sides")
+            self.git(wt, "add", "reactions.txt")
+            self.git(wt, "commit", "-q", "--no-edit")
+        self.assertIn("isn't reviewed", self.reviewed_then(merge))
+
+    def test_a_merge_with_an_extra_change_still_needs_review(self):
+        def merge(wt):
+            self.other_task_merged()
+            self.git(wt, "merge", "-q", "--no-commit", "main")
+            with open(os.path.join(wt, "reactions.txt"), "w") as f:
+                f.write("reactions sneaked in")
+            self.git(wt, "add", "reactions.txt")
+            self.git(wt, "commit", "-q", "--no-edit")
+        self.assertIn("isn't reviewed", self.reviewed_then(merge))
+
+    def test_an_own_commit_after_review_still_needs_review(self):
+        self.assertIn("isn't reviewed", self.reviewed_then(lambda wt: self.change(wt, "reactions on the right")))
+
+    def test_an_own_commit_then_a_clean_merge_still_needs_review(self):
+        def then(wt):
+            self.change(wt, "reactions on the right")
+            self.other_task_merged()
+            self.git(wt, "merge", "-q", "--no-edit", "main")
+        self.assertIn("isn't reviewed", self.reviewed_then(then))
+
+    def test_a_branch_reset_onto_unrelated_history_still_needs_review(self):
+        def then(wt):
+            self.git(wt, "checkout", "-q", "--orphan", "fresh")
+            self.commit(wt, "a new root")
+            self.git(wt, "branch", "-f", "task/1", "fresh")
+            self.git(wt, "checkout", "-q", "task/1")
+        self.assertIn("isn't reviewed", self.reviewed_then(then))
+
+    def test_a_clean_merge_from_another_branch_still_needs_review(self):
+        def then(wt):
+            self.git(self.main, "checkout", "-q", "-b", "side")
+            self.other_task_merged()
+            self.git(self.main, "checkout", "-q", "main")
+            self.git(wt, "merge", "-q", "--no-edit", "side")
+        self.assertIn("isn't reviewed", self.reviewed_then(then))
+
 class TimeLeft(unittest.TestCase):
     """Every status gives the time left, a rough guess beats none (SHEP-13): the minutes show from
     the first one, one without --left asks for it, and every brief and template says so. In memory."""
@@ -1628,7 +1729,7 @@ class ReviewAsAHelperAgent(unittest.TestCase):
         for words in (templates.WORKER_MD, worker):
             self.assertIn("--label herdr.role=reviewer", words)
             self.assertIn("herdr.task=$HERDR_BROWSER_TASK", words)
-            self.assertIn("codex --sandbox read-only --ask-for-approval never", words)
+            self.assertIn("codex --no-daemon --sandbox read-only --ask-for-approval never", words)
             self.assertIn("claude --permission-mode plan", words)
             self.assertIn("hc wait <its name>", words)
             self.assertNotIn("< /dev/null", words)
@@ -1648,6 +1749,164 @@ class ReviewAsAHelperAgent(unittest.TestCase):
             with open(os.path.join(d, "reviewer.md"), "w") as f:
                 f.write(templates.TEMPLATE_HEADS["reviewer"] + "My own words.")
             self.assertEqual(templates.instructions("reviewer"), "My own words.")
+
+
+class ReviewerCanRun(unittest.TestCase):
+    """A Codex reviewer that can't run is never started: one that isn't signed in here (the
+    scheduler's `codex login status`) gives way to the task's own CLI with plain words for the agent
+    and the person, and the reviewer's command runs without Codex's shared background server, whose
+    old sign-in failed every review turn ("access token could not be refreshed"). In memory."""
+
+    def setUp(self):
+        sys.path.insert(0, BIN)
+        from herdr_task import settings
+        self.settings = settings
+
+    def reviewer(self, codex, reviewer=None, agent="claude", model=None, check=False):
+        from unittest import mock
+        cfg = {"tasks": {"review_rounds": 3}, "reviewer": dict({"agent": reviewer} if reviewer else {}, **({"model": model} if model else {}))}
+        path = os.path.join(tempfile.mkdtemp(), "cli-check.json")
+        if codex:
+            with open(path, "w") as f:
+                json.dump({"machines": {"": {"claude": "ready", "codex": codex}}}, f)
+        with mock.patch.object(self.settings, "settings_for", lambda s, space: cfg), \
+                mock.patch.object(self.settings, "by_layer", lambda *a: "all"), \
+                mock.patch.object(self.settings, "CLI_CHECK", path), \
+                mock.patch.object(self.settings.shutil, "which", lambda x: "/usr/bin/" + x):
+            return next(x for x in self.settings.task_settings(None, {"id": 1, "mode": "worktree"}, argv=[agent], check_reviewer=check)
+                        if x["label"] == "Reviewer")
+
+    def test_fresh_sign_in_check_overrides_absent_or_stale_cache(self):
+        from unittest import mock
+        for cached in (None, "ready", "signed-out"):
+            for output in ("Not logged in", "Your access token could not be refreshed"):
+                with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", output)) as run:
+                    r = self.reviewer(cached, reviewer="codex", check=True)
+                self.assertEqual(r["value"]["agent"], "claude")
+                self.assertIn("`codex login`", r["text"])
+                self.assertIn("Tell the person", r["text"])
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(run.call_args.args[0], ["codex", "login", "status"])
+                self.assertEqual(run.call_args.kwargs["timeout"], 10)
+        with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "Logged in using ChatGPT")):
+            self.assertEqual(self.reviewer("signed-out", check=True)["value"]["agent"], "codex")
+
+    def test_missing_or_unreadable_login_does_not_start_codex(self):
+        from unittest import mock
+        for error in (FileNotFoundError(), subprocess.TimeoutExpired("codex", 10), OSError("denied")):
+            with mock.patch("subprocess.run", side_effect=error):
+                r = self.reviewer("ready", reviewer="codex", check=True)
+            self.assertEqual(r["value"]["agent"], "claude")
+        with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "unexpected output")):
+            self.assertEqual(self.reviewer("ready", check=True)["value"]["agent"], "claude")
+
+    def test_no_signed_in_codex_fallback_stops_the_check(self):
+        from unittest import mock
+        with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", "Not logged in")):
+            with self.assertRaisesRegex(self.settings.Fail, "codex login.*No reviewer started"):
+                self.reviewer("ready", reviewer="codex", agent="codex", check=True)
+
+    def test_worker_checks_before_launch_and_handles_auth_failure(self):
+        from herdr_task import templates
+        with open(os.path.join(ROOT, "templates", "worker.md")) as f:
+            worker = f.read()
+        for words in (worker, templates.WORKER_MD):
+            self.assertIn("reviewer-check", words)
+            self.assertIn("If the check fails, do not start", words)
+            self.assertIn("token-refresh", words)
+            self.assertIn("startup warnings alone", words)
+
+    def test_reviewer_check_command_returns_fallback_without_starting_it(self):
+        import argparse
+        import contextlib
+        import io
+        from unittest import mock
+        from herdr_task import commands, launch
+        task = {"id": 1, "mode": "worktree", "agents": [{"argv": ["claude"]}]}
+        store = Store([task])
+        cfg = {"tasks": {"review_rounds": 3}, "reviewer": {"agent": "codex", "model": "gpt-x"}}
+        out = io.StringIO()
+        with mock.patch.object(commands, "open_store", return_value=store), \
+                mock.patch.object(self.settings, "settings_for", return_value=cfg), \
+                mock.patch.object(self.settings, "by_layer", return_value=None), \
+                mock.patch.object(self.settings, "cli_here", return_value="ready"), \
+                mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", "Not logged in")) as run, \
+                contextlib.redirect_stdout(out):
+            commands.cmd_reviewer_check(argparse.Namespace(id="1", folder="/f", json=True))
+        row = json.loads(out.getvalue())
+        self.assertEqual(row["value"], {"agent": "claude", "model": None, "effort": None})
+        self.assertIn("`codex login`", row["text"])
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[0], ["codex", "login", "status"])
+        self.assertIn("reviewer-check", launch.OWN)
+
+    def test_unedited_worker_gets_the_preflight_instructions(self):
+        from unittest import mock
+        from herdr_task import templates
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "worker.md")
+            with open(path, "w") as f:
+                f.write(templates.TEMPLATE_HEADS["worker"] + templates.WORKER_MD_BEFORE_REVIEWER_CHECK)
+            with mock.patch.object(templates, "TEMPLATES", d):
+                self.assertEqual(templates.instructions("worker"), templates.WORKER_MD.strip())
+
+    def test_codex_signed_in_or_unknown_reviews(self):
+        for state in ("ready", None):
+            r = self.reviewer(state)
+            self.assertEqual(r["value"]["agent"], "codex")
+            self.assertEqual(r["text"], "codex (the other CLI)")
+        self.assertEqual(self.reviewer(None, reviewer="codex", model="gpt-x")["text"], "codex, model gpt-x")
+
+    def test_codex_signed_out_is_never_the_reviewer(self):
+        r = self.reviewer("signed-out")
+        self.assertEqual(r["value"], {"agent": "claude", "model": None, "effort": None})
+        self.assertIn("Codex isn't signed in here: run `codex login`, then ask for the review again", r["text"])
+        self.assertIn("Tell the person", r["text"])
+        # Set by the person, with a model for Codex: the fallback runs on its own CLI's model.
+        r = self.reviewer("signed-out", reviewer="codex", model="gpt-x")
+        self.assertEqual(r["value"], {"agent": "claude", "model": None, "effort": None})
+        self.assertNotIn("gpt-x", r["text"])
+        self.assertIsNone(r["by"])  # not the person's pick: it isn't theirs
+        self.assertEqual(self.reviewer("ready", reviewer="codex")["by"], "all")
+
+    def test_the_pick(self):
+        pick = self.settings.reviewer_pick
+        self.assertEqual(pick("codex", "claude", "ready"), ("codex", None))
+        self.assertEqual(pick("codex", "claude", None), ("codex", None))
+        self.assertEqual(pick("codex", "codex", "signed-out"), ("codex", None))  # it runs the task: signed in
+        self.assertEqual(pick("claude", "codex", "signed-out")[0], "codex")
+        self.assertIn("`claude auth login`", pick("claude", "codex", "signed-out")[1])
+        self.assertEqual(pick("gemini", "claude", "signed-out"), ("gemini", None))
+
+    def test_the_review_command_skips_the_shared_server(self):
+        from herdr_task import templates
+        with open(os.path.join(ROOT, "templates", "worker.md")) as f:
+            worker = f.read()
+        for words in (templates.WORKER_MD, worker):
+            self.assertIn("`codex --no-daemon --sandbox read-only --ask-for-approval never`", words)
+        self.assertIn(templates.WORKER_MD_BEFORE_NO_DAEMON, templates.OLD_WORKERS)  # an unedited old one gets today's
+
+    def test_startup_warnings_are_no_error(self):
+        """A Codex log with startup warnings and a turn that ends well is no provider cut; the
+        sign-in failure itself reads as Signed out."""
+        from herdr_task import provider
+        warn = [{"type": "event_msg", "payload": {"type": "warning", "message": f"MCP server {i} failed to start"}} for i in range(11)]
+        start = {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "u1"}}
+        said = {"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Findings: none"}]}}
+        done = {"type": "event_msg", "payload": {"type": "task_complete", "turn_id": "u1", "last_agent_message": "Findings: none"}}
+        failed = {"type": "event_msg", "timestamp": "2026-11-06T15:28:10Z", "payload": {"type": "task_complete", "turn_id": "u1", "error": {
+            "message": "Your access token could not be refreshed because you have since logged out or signed in to another account. "
+                       "Please sign in again.", "codex_error_info": "unauthorized"}}}
+        d = tempfile.mkdtemp()
+
+        def log(lines):
+            path = os.path.join(d, f"{len(os.listdir(d))}.jsonl")
+            with open(path, "w") as f:
+                f.write("".join(json.dumps(x) + "\n" for x in lines))
+            return path
+        self.assertIsNone(provider.provider_cut(log([*warn, start, *warn, said, done])))
+        cut = provider.provider_cut(log([*warn, start, failed]))
+        self.assertEqual(provider.provider_error(cut["text"], cut["code"], cut["status"])["reason"], "Signed out")
 
 
 class Store:
@@ -1869,6 +2128,226 @@ class Scheduled(unittest.TestCase):
             self.run_cmd(self.commands.cmd_edit, id="1", in_="1h")  # started: too late
         with self.assertRaises(self.Fail):
             self.add("Typo", at="fry 9:00")
+
+
+class AutomationSettings(unittest.TestCase):
+    """auto add/edit --set: an automation keeps task settings (as add --set takes them) and each task it
+    adds gets them, so a read-only sweep can run with Review off. Scheduled's real task list on disk."""
+    setUp_list, run_cmd, task = Scheduled.setUp, Scheduled.run_cmd, Scheduled.task
+
+    def setUp(self):
+        from unittest import mock
+        self.setUp_list()
+        import herdr_task.automations as au
+        self.au = au
+        begin = self.commands.begin  # Scheduled's fake
+        for name, value in (("begin", begin), ("queue_reason", lambda s, t: None), ("worker_argv", lambda s, t, space: ["claude"]),
+                            ("ensure_scheduler", lambda quiet=False: {}), ("default_space", lambda: "sp1")):
+            p = mock.patch.object(au, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def auto(self, sub, **kw):
+        base = dict(auto=sub, every=None, on=None, match=None, from_=None, space=None, parent=None, here=False, worktree=False)
+        return self.run_cmd(self.au.cmd_auto, **{**base, **kw})
+
+    def run_task(self):
+        v = self.auto("run-now", id="A1")
+        return self.task(int(v["last_task"].split("-")[-1]))
+
+    def test_add_set_reaches_each_run(self):
+        import herdr_task.settings as settings
+        v = self.auto("add", title="PR sweep", every="hourly", here=True, set=["review=off", "proof=off"])
+        self.assertEqual(v["set"], {"review": "off", "proof": "off"})
+        t = self.run_task()
+        self.assertEqual(t["set"], {"review": "off", "proof": "off"})
+        with self.store_mod.Store(self.store_mod.locate(self.folder), write=False) as s:
+            self.assertEqual(settings.review_limits(s, t)[0], False)
+            proof = next(x for x in settings.task_settings(s, t) if x["label"] == "Proof")
+            self.assertEqual((proof["value"], proof["by"]), (False, "task"))
+
+    def test_edit_set_changes_and_clears_later_runs(self):
+        self.auto("add", title="PR sweep", every="hourly", set=["review=off"])
+        self.assertEqual(self.run_task()["set"], {"review": "off"})
+        v = self.auto("edit", id="A1", set=["review.rounds=1", "reviewer.effort=low"])
+        self.assertEqual((v["set"], v["reviewer_effort"]), ({"review": "off", "review_rounds": 1}, "low"))
+        t = self.run_task()
+        self.assertEqual((t["set"], t["reviewer_effort"]), ({"review": "off", "review_rounds": 1}, "low"))
+        self.auto("edit", id="A1", set=["review=", "review.rounds=default", "reviewer.effort="])
+        t = self.run_task()
+        self.assertNotIn("set", t)
+        self.assertNotIn("reviewer_effort", t)
+
+    def test_a_bad_set_is_refused_and_nothing_saved(self):
+        with self.assertRaises(self.Fail) as e:
+            self.auto("add", title="Sweep", every="hourly", set=["colour=red"])
+        self.assertIn("--set takes", str(e.exception))
+        with self.assertRaises(self.Fail):
+            self.auto("add", title="Sweep", every="hourly", set=["review"])
+        with self.store_mod.Store(self.store_mod.locate(self.folder), write=False) as s:
+            self.assertFalse(s.data.get("automations"))
+
+    def test_the_cli_takes_set_on_add_and_edit(self):
+        for sub in ("add", "edit"):
+            out = subprocess.run([sys.executable, os.path.join(BIN, "herdr-task"), "auto", sub, "--help"],
+                                 capture_output=True, text=True).stdout
+            self.assertIn("--set KEY=VALUE", out, sub)
+
+
+class NothingOfItsOwnInTheFolder(unittest.TestCase):
+    """A task in the folder itself (not a worktree) that changed nothing since it started has nothing
+    to review, as a worktree task with no commits of its own: ready never waits on a review round. A
+    throwaway git repo; hc and gh are never run."""
+
+    def setUp(self):
+        import shutil
+        from unittest import mock
+        sys.path.insert(0, BIN)
+        import herdr_task.commands as commands
+        self.commands = commands
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.main = os.path.join(self.root, "repo")
+        self.git(self.root, "init", "-q", "-b", "main", self.main)
+        for k, v in (("user.name", "T"), ("user.email", "t@example.com"), ("commit.gpgsign", "false")):
+            self.git(self.main, "config", k, v)
+        with open(os.path.join(self.main, "notes.md"), "w") as f:
+            f.write("notes\n")
+        self.git(self.main, "add", "notes.md")
+        self.git(self.main, "commit", "-q", "-m", "base")
+        self.store = Store([{"id": 1, "title": "PR sweep", "state": "todo", "mode": "here", "agents": [], "prompt": ""}])
+        self.store.loc["folder"] = self.main
+        self.task = self.store.data["tasks"][0]
+        for name, value in (("open_store", lambda args, write=True: self.store), ("view", lambda s, t, live=None: dict(t)),
+                            ("say", lambda *a: None), ("live_agents", lambda key: []), ("find_proof", lambda *a: None),
+                            ("task_settings", lambda *a: []), ("ready_turns", lambda *a: {}),
+                            ("review_limits", lambda s, t: (True, 3)), ("launch", lambda *a, **k: {"address": "t1"}),
+                            ("brief", lambda *a: ""), ("parent_for", lambda parent, space: None)):
+            p = mock.patch.object(commands, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        commands.begin(self.store, self.task, ["claude"], "sp1")
+
+    def git(self, cwd, *args):
+        return subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, check=True).stdout.strip()
+
+    def ready(self):
+        import argparse
+        self.commands.cmd_ready(argparse.Namespace(id="SHEP-1", json=True, folder=None, summary="Nothing new.", details=None,
+                                                   proof=None, agents_md=None))
+        return self.task["state"]
+
+    def test_ready_with_nothing_changed_needs_no_review_round(self):
+        self.assertEqual(self.ready(), "ready")
+        self.assertEqual(self.task["here_start"], self.git(self.main, "rev-parse", "HEAD"))
+        self.assertNotIn("review_out", self.task)
+
+    def test_a_commit_of_its_own_still_needs_a_review_round(self):
+        self.git(self.main, "commit", "-q", "--allow-empty", "-m", "its work")
+        with self.assertRaises(self.commands.Fail) as e:
+            self.ready()
+        self.assertIn("isn't reviewed", str(e.exception))
+        self.assertEqual(self.task["state"], "running")
+
+    def test_an_uncommitted_change_still_needs_a_review_round(self):
+        with open(os.path.join(self.main, "notes.md"), "a") as f:
+            f.write("more\n")
+        with self.assertRaises(self.commands.Fail):
+            self.ready()
+
+    def test_a_new_file_still_needs_a_review_round(self):
+        with open(os.path.join(self.main, "report.md"), "w") as f:
+            f.write("its report\n")
+        with self.assertRaises(self.commands.Fail):
+            self.ready()
+
+    def restart_with(self, **files):
+        """The person's own work in progress was there before it started."""
+        for path, text in files.items():
+            with open(os.path.join(self.main, path), "w") as f:
+                f.write(text)
+        for k in ("here_start", "here_files"):
+            self.task.pop(k, None)
+        self.commands.begin(self.store, self.task, ["claude"], "sp1")
+
+    def test_the_persons_own_changes_from_before_it_started_dont_count(self):
+        self.restart_with(**{"notes.md": "wip\n", "draft.md": "wip\n"})
+        self.assertEqual(self.ready(), "ready")
+
+    def test_a_change_to_a_file_already_new_at_start_still_needs_a_review_round(self):
+        draft = os.path.join(self.main, "draft.md")
+        self.restart_with(**{"draft.md": "wip\n"})
+        with open(draft, "a") as f:
+            f.write("its work\n")
+        with self.assertRaises(self.commands.Fail):
+            self.ready()
+
+    def test_a_file_name_starting_with_space_is_compared(self):
+        self.restart_with(**{" draft.md": "wip\n"})
+        self.assertEqual(self.ready(), "ready")
+        with open(os.path.join(self.main, " draft.md"), "w") as f:
+            f.write("changed\n")
+        with self.assertRaises(self.commands.Fail):
+            self.ready()
+
+    def test_a_new_symlink_target_is_compared(self):
+        link = os.path.join(self.main, "link")
+        os.symlink("missing-before", link)
+        self.restart_with()
+        self.assertEqual(self.ready(), "ready")
+        os.unlink(link)
+        os.symlink("missing-after", link)
+        with self.assertRaises(self.commands.Fail):
+            self.ready()
+
+    def test_an_unreadable_new_file_keeps_the_gate(self):
+        from unittest import mock
+        self.restart_with(**{"draft.md": "wip\n"})
+        with mock.patch("builtins.open", side_effect=PermissionError("denied")):
+            with self.assertRaises(self.commands.Fail):
+                self.ready()
+
+    def test_a_named_pipe_is_not_git_work_and_is_never_read(self):
+        os.mkfifo(os.path.join(self.main, "pipe"))
+        self.assertEqual(self.ready(), "ready")
+
+    def test_a_new_files_executable_mode_is_compared(self):
+        self.restart_with(**{"script.sh": "exit 0\n"})
+        os.chmod(os.path.join(self.main, "script.sh"), 0o755)
+        with self.assertRaises(self.commands.Fail):
+            self.ready()
+
+    def test_non_utf8_tracked_changes_are_compared(self):
+        path = os.path.join(self.main, "notes.md")
+        with open(path, "ab") as f:
+            f.write(b"\xe9\n")
+        self.restart_with()
+        self.assertEqual(self.ready(), "ready")
+        with open(path, "ab") as f:
+            f.write(b"more\n")
+        with self.assertRaises(self.commands.Fail):
+            self.ready()
+
+    def test_carriage_returns_in_untracked_names_are_compared(self):
+        path = os.path.join(self.main, "odd\rname.txt")
+        with open(path, "wb") as f:
+            f.write(b"draft\n")
+        self.restart_with()
+        self.assertEqual(self.ready(), "ready")
+        with open(path, "ab") as f:
+            f.write(b"more\n")
+        with self.assertRaises(self.commands.Fail):
+            self.ready()
+
+    def test_a_folder_that_is_no_git_repo_keeps_the_gate(self):
+        plain = os.path.join(self.root, "plain")
+        os.makedirs(plain)
+        self.store.loc["folder"] = plain
+        self.task.pop("here_start", None)
+        self.commands.begin(self.store, self.task, ["claude"], "sp1")
+        self.assertNotIn("here_start", self.task)
+        with self.assertRaises(self.commands.Fail):
+            self.ready()
 
 
 class FolderSpace(unittest.TestCase):
