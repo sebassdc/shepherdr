@@ -1570,6 +1570,14 @@ class MergedOnlyWithOwnWork(unittest.TestCase):
             self.git(wt, "merge", "-q", "--no-edit", "main")
         self.assertIn("isn't reviewed", self.reviewed_then(then))
 
+    def test_a_branch_reset_onto_unrelated_history_still_needs_review(self):
+        def then(wt):
+            self.git(wt, "checkout", "-q", "--orphan", "fresh")
+            self.commit(wt, "a new root")
+            self.git(wt, "branch", "-f", "task/1", "fresh")
+            self.git(wt, "checkout", "-q", "task/1")
+        self.assertIn("isn't reviewed", self.reviewed_then(then))
+
     def test_a_clean_merge_from_another_branch_still_needs_review(self):
         def then(wt):
             self.git(self.main, "checkout", "-q", "-b", "side")

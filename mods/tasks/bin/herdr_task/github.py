@@ -54,7 +54,7 @@ def only_merged_base(main, reviewed, tip, base):
         return False
     ok, out, _ = git(main, "rev-list", "--first-parent", "--parents", f"{reviewed}..{tip}")
     rows = [line.split() for line in out.splitlines()] if ok else []
-    if not rows or rows[-1][1] != reviewed:
+    if not rows or len(rows[-1]) < 2 or rows[-1][1] != reviewed:
         return False  # the reviewed commit isn't on the tip's own line (rebased, or merged into another branch)
     if any(len(r) < 3 or not all(in_base_here_or_remote(main, p, base) for p in r[2:]) for r in rows):
         return False
