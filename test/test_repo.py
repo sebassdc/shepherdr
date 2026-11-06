@@ -342,15 +342,23 @@ class SessionNote(unittest.TestCase):
             self.assertTrue(ctx.endswith('`herdr-artifact guide` first. Reactions (on in Settings): <hc react="👀" to="x"/>'), ctx[-120:])
             self.assertEqual(asked.split(), ["_session-note", terminal])
 
-    def test_shell_scripts_parse(self):
-        # Each shipped .sh parses with the shell its first line names; on a Mac that is bash 3.2, which once
-        # mis-read this hook's apostrophes in a heredoc inside $( ) and failed every Claude session's hook.
+    def test_shell_scripts_run_on_bash_3_2(self):
+        # bash 3.2 (a Mac's /bin/sh) mis-reads apostrophes in a heredoc inside $( ): this hook once failed every
+        # Claude session there. CI's dash and bash 5 parse it fine, so the pattern itself is refused; each
+        # script also parses with the shell its first line names (on a Mac, bash 3.2).
         import subprocess
-        files = subprocess.run(["git", "ls-files", "*.sh"], cwd=ROOT, capture_output=True, text=True).stdout.split()
-        self.assertIn("mods/chat/session-note.sh", files)
-        for f in files:
+        scripts = {}
+        for f in subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True).stdout.split():
+            with open(os.path.join(ROOT, f), "rb") as fh:
+                first = fh.readline(200).decode("utf-8", "replace").split()
+            if first and first[0].startswith("#!") and re.search(r"(^|/)(ba)?sh$", first[-1]):
+                scripts[f] = [first[0][2:], *first[1:]]
+        self.assertIn("mods/chat/session-note.sh", scripts)
+        for f, shell in scripts.items():
             with open(os.path.join(ROOT, f)) as fh:
-                shell = fh.readline()[2:].split()
+                for n, line in enumerate(fh, 1):
+                    if not line.lstrip().startswith("#"):
+                        self.assertNotRegex(line, r"\$\([^)]*(?<!<)<<(?!<)", f"{f}:{n}: heredoc inside $( ), use read -r")
             out = subprocess.run([*shell, "-n", os.path.join(ROOT, f)], capture_output=True, text=True)
             self.assertEqual(out.returncode, 0, f"{f}: {out.stderr}")
 
