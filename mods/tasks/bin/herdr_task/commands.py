@@ -943,7 +943,7 @@ def merge_now(s, t):
             # gh refuses --delete-branch on a base with a merge queue; without it the pull request
             # joins the queue (still open). The repo's own setting deletes the branch on GitHub.
             ok, _, err = gh(*how)
-            if ok:
+            if ok or (pr_queue(t) or {}).get("queued"):  # or already in it (added by hand)
                 t["pr"]["queued"], t["pr"]["checked"] = now(), 0
                 t.pop("attention", None)
                 return QUEUED

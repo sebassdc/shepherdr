@@ -181,7 +181,7 @@ export class PanelHost {
   // back at work.
   acceptable(st, addr) {
     const r = this.rec;
-    return Boolean(r && r.state === "ready" && !r.attention && st !== "blocked" && !r.merge_requested && !(r.auto_merge && r.pr && !r.merged))
+    return Boolean(r && r.state === "ready" && !r.attention && st !== "blocked" && !r.merge_requested && !((r.auto_merge || r.pr?.queued) && r.pr && !r.merged))
       && !this.again(st, addr);
   }
 
@@ -235,7 +235,7 @@ export class PanelHost {
     const s = ["todo", "queued", "scheduled", "done"].includes(r.state) ? r.state
       : (r.attention && !fixing) || st === "blocked" || r.retry?.over ? "needs"
       : fixing ? "working"
-      : r.state === "ready" && !this.again(st, addr) ? ((r.merge_requested && live) || (r.auto_merge && r.pr && !r.merged) ? "merging" : "ready")
+      : r.state === "ready" && !this.again(st, addr) ? ((r.merge_requested && live) || ((r.auto_merge || r.pr?.queued) && r.pr && !r.merged) ? "merging" : "ready")
       : st === "working" || r.retry || starting ? "working" : "needs";
     return taskDot(s, { pct: ownProgress([addr])?.pct ?? r.progress?.done, halo: true });
   }

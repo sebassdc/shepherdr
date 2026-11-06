@@ -938,6 +938,33 @@ class BackToWork(unittest.TestCase):
         self.assertEqual((t["state"], report["attention"]), ("ready", [t["id"]]))
         self.assertEqual(self.agents.task_status(t, []), ("needs", "attention", t["attention"]))
 
+    def test_pr_queue_reads_githubs_answer(self):
+        import herdr_task.github as github
+        task = {"pr": {"number": 7, "repo": "o/r"}}
+        def answer(pr, ok=True):
+            out = json.dumps({"data": {"repository": {"pullRequest": pr}}})
+            with self.mock.patch.object(github, "gh", lambda *a, **k: (ok, out, "")):
+                return github.pr_queue(task)
+        removed = {"nodes": [{"reason": "Required status check \"ci\" failed"}]}
+        self.assertEqual(answer({"isInMergeQueue": True, "autoMergeRequest": None, "timelineItems": {"nodes": []}}),
+                         {"queued": True, "reason": None})
+        self.assertEqual(answer({"isInMergeQueue": False, "autoMergeRequest": {"enabledAt": "x"}, "timelineItems": removed})["queued"], True)
+        self.assertEqual(answer({"isInMergeQueue": False, "autoMergeRequest": None, "timelineItems": removed}),
+                         {"queued": False, "reason": 'Required status check "ci" failed'})
+        self.assertIsNone(answer(None))
+        self.assertIsNone(answer({"isInMergeQueue": True}, ok=False))
+        with self.mock.patch.object(github, "gh", lambda *a, **k: (True, "not json", "")):
+            self.assertIsNone(github.pr_queue(task))
+
+    def test_a_pull_request_already_in_the_queue_counts_as_queued(self):
+        t = self.pr_task()
+        calls, done = self.queue_repo({"queued": True, "reason": None})
+        gh = lambda *a, **k: (calls.append(a), (False, "", self.QUEUE_ERR if "--delete-branch" in a else "already queued"))[1]
+        with self.mock.patch.object(self.commands, "gh", gh):
+            self.commands.cmd_accept(self.args())
+        self.assertEqual((t["state"], done, "attention" in t), ("ready", [], False))
+        self.assertTrue(t["pr"]["queued"])
+
     def test_a_base_without_a_merge_queue_merges_as_before(self):
         t = self.pr_task()
         calls, done = self.queue_repo(None)
