@@ -19,7 +19,7 @@ from .agents import (
     agent_running, busy_again, detail, fit, LINE_MAX, live_agents, ready_turns, STATUSES, SUMMARY_MAX, WORKING_AGAIN,
 )
 from .sessions import refresh_sessions
-from .github import already_merged, finish, gh, github, in_base_here_or_remote, merged_here, own_work, pr_adopt, pr_open, pr_pending, pr_problem, pr_view, update_main, watch_main
+from .github import already_merged, finish, gh, github, in_base_here_or_remote, merged_here, only_merged_base, own_work, pr_adopt, pr_open, pr_pending, pr_problem, pr_view, update_main, watch_main
 from .launch import (
     base_ref, brief, caller_labels, caller_space, current_base, default_space, folder_for, handoff, launch, name_tabs,
     own_path, parent_for, resume_argv, retag_tabs, set_branch, tab_title, task_tabs,
@@ -449,7 +449,10 @@ def review_refusal(s, t, wt):
         return None  # no commits of its own: nothing to review (nothing to merge)
     revs = [r for r in t.get("reviews") or [] if r.get("result") in REVIEWED and (r.get("at") or 0) >= (t.get("started") or 0)]
     head = t.get("head") if wt else None
-    if (any(r.get("head") == head for r in revs) if wt else bool(revs)):
+    base = t.get("base") or "main"
+    # A reviewed commit with only clean merges of the base after it (a branch kept up to date) is reviewed.
+    if (any(r.get("head") == head or only_merged_base(s.loc["folder"], r.get("head"), head, base) for r in revs)
+            if wt else bool(revs)):
         return None
     ref, ht, folder = s.ref(t), own_path(), shlex.quote(s.loc["folder"])
     what = f"your final commit {head[:7]}" if head else "this task's work"
@@ -459,7 +462,8 @@ def review_refusal(s, t, wt):
                 f"it, and end your turn: only your Assistant can add a round (herdr-task review-more {ref}).")
     return (f"Review is on and {what} isn't reviewed. Have it reviewed as your brief says, fix what must be fixed, record the "
             f"round with `{ht} reviewed {ref} --folder {folder} --report \"<findings, a line>\"` (on the commit you'd say "
-            f"ready at), then run ready again. {rounds - rounds_used(t)} of {rounds} rounds left.")
+            f"ready at), then run ready again. (A clean merge of {base} after a reviewed commit needs no round; one with "
+            f"conflicts resolved or other changes does.) {rounds - rounds_used(t)} of {rounds} rounds left.")
 
 
 def cmd_reviewed(args):
