@@ -5,8 +5,9 @@ import json
 import os
 import re
 import shutil
+import subprocess
 
-from .base import Fail, HOME, MAX_RUNNING
+from .base import Fail, HOME, MAX_RUNNING, STORE
 
 
 # What each agent key starts by default. Unknown keys run as themselves; --argv overrides.
@@ -347,7 +348,55 @@ def other_cli(agent):
     return other if other and shutil.which(other) else agent
 
 
-def task_settings(s, t, space=None, argv=None):
+# How each CLI is signed in again, for a reviewer that isn't (takeover.py's NAMES, with its command).
+SIGN_IN = {"claude": ("Claude Code", "claude auth login"), "codex": ("Codex", "codex login")}
+CLI_CHECK = os.path.join(os.path.dirname(STORE), "cli-check.json")  # takeover.py's sign-in check
+
+
+def cli_here(kind):
+    """This machine's last word on a CLI from the scheduler's sign-in check (`codex login status`,
+    `claude auth status`; takeover.py's cli_check_pass): "ready",
+    "signed-out", "missing" or None (unknown). Only read: a brief never waits on the CLIs."""
+    try:
+        with open(CLI_CHECK) as f:
+            return ((json.load(f).get("machines") or {}).get("") or {}).get(kind)
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def cli_now(kind):
+    """Codex's own sign-in status now, bounded and without exposing its account details."""
+    if kind != "codex":
+        return cli_here(kind)
+    try:
+        r = subprocess.run(["codex", "login", "status"], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+    except FileNotFoundError:
+        return "missing"
+    except (OSError, subprocess.TimeoutExpired):
+        return "unavailable"
+    words = r.stdout + "\n" + r.stderr
+    if r.returncode == 0 and re.search(r"^Logged in\b", words, re.I | re.M):
+        return "ready"
+    if re.search(r"not logged in|token.*refresh|sign in again", words, re.I):
+        return "signed-out"
+    return "unavailable"
+
+
+def reviewer_pick(who, own, state):
+    """(reviewer, why): a reviewer CLI that isn't signed in here would sit at its sign-in screen, so
+    the task's own CLI reviews instead (as other_cli when the other isn't installed), and why says
+    what to do. Unknown or ready: as asked."""
+    if state not in ("signed-out", "missing", "unavailable") or who == own or who not in SIGN_IN:
+        return who, None
+    name, cmd = SIGN_IN[who]
+    why = {"signed-out": f"{name} isn't signed in here: run `{cmd}`, then ask for the review again",
+           "missing": f"{name} isn't installed here: install it and run `{cmd}`, then ask for the review again",
+           "unavailable": f"{name}'s sign-in couldn't be checked: run `{cmd}`, then ask for the review again"}
+    return own, why[state]
+
+
+def task_settings(s, t, space=None, argv=None, check_reviewer=False):
     """The settings that shape this task's work, each {label, text, value, by}."""
     space = space or t.get("space")
     cfg = settings_for(s, space)
@@ -378,11 +427,19 @@ def task_settings(s, t, space=None, argv=None):
         for f in ("model", "effort"):
             if t.get(f"reviewer_{f}"):
                 rv[f] = t[f"reviewer_{f}"]
-        who = rv.get("agent") or other_cli(agent)
+        want = rv.get("agent") or other_cli(agent)
+        state = cli_now(want) if check_reviewer else cli_here(want)
+        who, why = reviewer_pick(want, agent, state)
+        if check_reviewer and who == "codex" and (state if want == "codex" else cli_now("codex")) != "ready":
+            raise Fail("Codex isn't ready: run `codex login`, then ask for the review again. No reviewer started. Tell the person so in your chat.")
+        if why:  # its model and effort were for the CLI that can't run
+            rv = {}
         text = who + (f", model {rv['model']}" if rv.get("model") else "") + (f", effort {rv['effort']}" if rv.get("effort") else "")
-        if not rv.get("agent"):
+        if why:
+            text += f" (your own CLI: {why}. Tell the person so in your chat)"
+        elif not rv.get("agent"):
             text += " (the other CLI)" if who != agent else " (your own CLI: no other is installed)"
-        add("Reviewer", text, {"agent": who, "model": rv.get("model"), "effort": rv.get("effort")}, rv_by)
+        add("Reviewer", text, {"agent": who, "model": rv.get("model"), "effort": rv.get("effort")}, None if why else rv_by)
         must = sets.get("must_fix") or (k.get("must_fix") if k.get("must_fix") in LEVELS else "major")
         add("Must fix", MUST_WORDS[must], must, "task" if "must_fix" in sets else by_layer(s, space, "tasks", "must_fix", must, "major"))
         rounds = sets.get("review_rounds") or (rounds_cfg if rounds_cfg > 0 else 3)
