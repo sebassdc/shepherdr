@@ -413,7 +413,7 @@ def task_settings(s, t, space=None, argv=None):
             text += f" (your own CLI: {why}. Tell the person so in your chat)"
         elif not rv.get("agent"):
             text += " (the other CLI)" if who != agent else " (your own CLI: no other is installed)"
-        add("Reviewer", text, {"agent": who, "model": rv.get("model"), "effort": rv.get("effort")}, rv_by)
+        add("Reviewer", text, {"agent": who, "model": rv.get("model"), "effort": rv.get("effort")}, None if why else rv_by)
         must = sets.get("must_fix") or (k.get("must_fix") if k.get("must_fix") in LEVELS else "major")
         add("Must fix", MUST_WORDS[must], must, "task" if "must_fix" in sets else by_layer(s, space, "tasks", "must_fix", must, "major"))
         rounds = sets.get("review_rounds") or (rounds_cfg if rounds_cfg > 0 else 3)

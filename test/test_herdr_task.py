@@ -1583,7 +1583,7 @@ class ReviewerCanRun(unittest.TestCase):
             with open(path, "w") as f:
                 json.dump({"machines": {"": {"claude": "ready", "codex": codex}}}, f)
         with mock.patch.object(self.settings, "settings_for", lambda s, space: cfg), \
-                mock.patch.object(self.settings, "by_layer", lambda *a: None), \
+                mock.patch.object(self.settings, "by_layer", lambda *a: "all"), \
                 mock.patch.object(self.settings, "CLI_CHECK", path), \
                 mock.patch.object(self.settings.shutil, "which", lambda x: "/usr/bin/" + x):
             return next(x for x in self.settings.task_settings(None, {"id": 1, "mode": "worktree"}, argv=[agent])
@@ -1605,6 +1605,8 @@ class ReviewerCanRun(unittest.TestCase):
         r = self.reviewer("signed-out", reviewer="codex", model="gpt-x")
         self.assertEqual(r["value"], {"agent": "claude", "model": None, "effort": None})
         self.assertNotIn("gpt-x", r["text"])
+        self.assertIsNone(r["by"])  # not the person's pick: it isn't theirs
+        self.assertEqual(self.reviewer("ready", reviewer="codex")["by"], "all")
 
     def test_the_pick(self):
         pick = self.settings.reviewer_pick
