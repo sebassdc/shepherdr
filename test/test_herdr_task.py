@@ -1491,6 +1491,101 @@ class MergedOnlyWithOwnWork(unittest.TestCase):
             self.task["head"] = self.git(self.task["worktree"], "rev-parse", "HEAD")
             self.assertIn("isn't reviewed", self.commands.review_refusal(self.store, self.task, self.task["worktree"]))
 
+    # A reviewed commit, then the base merged into the branch (a strict "up to date" rule): a clean
+    # merge adds nothing of its own, so it costs no review round; a conflict resolved by hand or an
+    # own commit still does.
+    def reviewed_then(self, then):
+        from unittest import mock
+        wt = self.task["worktree"]
+        reviewed = self.change(wt, "reactions on the left")
+        self.task.update(review_gate=True, reviews=[{"round": 1, "result": "report", "head": reviewed, "at": 1}])
+        then(wt)
+        self.task["head"] = self.git(wt, "rev-parse", "HEAD")
+        with mock.patch.object(self.commands, "review_limits", lambda s, t: (True, 3)):
+            return self.commands.review_refusal(self.store, self.task, wt)
+
+    def other_task_merged(self, name="other.txt", words="another task"):
+        with open(os.path.join(self.main, name), "w") as f:
+            f.write(words)
+        self.git(self.main, "add", name)
+        return self.commit(self.main, "another task merged")
+
+    def test_a_clean_merge_from_main_after_review_needs_no_round(self):
+        def merge(wt):
+            self.other_task_merged()
+            self.git(wt, "merge", "-q", "--no-edit", "main")
+            self.other_task_merged("third.txt")
+            self.git(wt, "merge", "-q", "--no-edit", "main")  # twice: main moved again
+        self.assertIsNone(self.reviewed_then(merge))
+
+    def test_a_clean_merge_from_origin_main_after_review_needs_no_round(self):
+        def merge(wt):
+            self.git(self.main, "update-ref", "refs/remotes/origin/main", self.other_task_merged())
+            self.git(self.main, "reset", "-q", "--hard", "HEAD~1")  # local main behind its remote
+            self.git(wt, "merge", "-q", "--no-edit", "origin/main")
+        self.assertIsNone(self.reviewed_then(merge))
+
+    def test_ready_after_a_clean_merge_from_main_goes_on_without_a_round(self):
+        import argparse
+        from unittest import mock
+        self.reviewed_then(lambda wt: (self.other_task_merged(), self.git(wt, "merge", "-q", "--no-edit", "main")))
+        self.github([])
+        with mock.patch.object(self.commands, "review_limits", lambda s, t: (True, 3)), \
+                mock.patch.object(self.commands, "find_proof", lambda *a: None), \
+                mock.patch.object(self.commands, "task_settings", lambda *a: []), \
+                mock.patch.object(self.commands, "ready_turns", lambda *a: {}), \
+                mock.patch.object(self.commands, "pr_open", lambda *a: (_ for _ in ()).throw(AssertionError("a pull request opened"))):
+            with self.assertRaisesRegex(AssertionError, "a pull request opened"):  # past the review gate
+                self.commands.cmd_ready(argparse.Namespace(id="SHEP-1", json=True, folder=None, summary="Done.", details=None,
+                                                           proof=None, agents_md=None))
+        self.assertEqual(len(self.task["reviews"]), 1)
+
+    def test_a_merge_with_a_conflict_resolved_by_hand_still_needs_review(self):
+        def merge(wt):
+            self.other_task_merged("reactions.txt", "reactions on the right")
+            subprocess.run(["git", "-C", wt, "merge", "-q", "--no-edit", "main"], capture_output=True)  # conflicts
+            with open(os.path.join(wt, "reactions.txt"), "w") as f:
+                f.write("reactions on both sides")
+            self.git(wt, "add", "reactions.txt")
+            self.git(wt, "commit", "-q", "--no-edit")
+        self.assertIn("isn't reviewed", self.reviewed_then(merge))
+
+    def test_a_merge_with_an_extra_change_still_needs_review(self):
+        def merge(wt):
+            self.other_task_merged()
+            self.git(wt, "merge", "-q", "--no-commit", "main")
+            with open(os.path.join(wt, "reactions.txt"), "w") as f:
+                f.write("reactions sneaked in")
+            self.git(wt, "add", "reactions.txt")
+            self.git(wt, "commit", "-q", "--no-edit")
+        self.assertIn("isn't reviewed", self.reviewed_then(merge))
+
+    def test_an_own_commit_after_review_still_needs_review(self):
+        self.assertIn("isn't reviewed", self.reviewed_then(lambda wt: self.change(wt, "reactions on the right")))
+
+    def test_an_own_commit_then_a_clean_merge_still_needs_review(self):
+        def then(wt):
+            self.change(wt, "reactions on the right")
+            self.other_task_merged()
+            self.git(wt, "merge", "-q", "--no-edit", "main")
+        self.assertIn("isn't reviewed", self.reviewed_then(then))
+
+    def test_a_branch_reset_onto_unrelated_history_still_needs_review(self):
+        def then(wt):
+            self.git(wt, "checkout", "-q", "--orphan", "fresh")
+            self.commit(wt, "a new root")
+            self.git(wt, "branch", "-f", "task/1", "fresh")
+            self.git(wt, "checkout", "-q", "task/1")
+        self.assertIn("isn't reviewed", self.reviewed_then(then))
+
+    def test_a_clean_merge_from_another_branch_still_needs_review(self):
+        def then(wt):
+            self.git(self.main, "checkout", "-q", "-b", "side")
+            self.other_task_merged()
+            self.git(self.main, "checkout", "-q", "main")
+            self.git(wt, "merge", "-q", "--no-edit", "side")
+        self.assertIn("isn't reviewed", self.reviewed_then(then))
+
 class TimeLeft(unittest.TestCase):
     """Every status gives the time left, a rough guess beats none (SHEP-13): the minutes show from
     the first one, one without --left asks for it, and every brief and template says so. In memory."""
