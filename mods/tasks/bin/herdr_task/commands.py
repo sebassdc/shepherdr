@@ -20,7 +20,7 @@ from .agents import (
     agent_running, busy_again, detail, fit, LINE_MAX, live_agents, ready_turns, STATUSES, SUMMARY_MAX, WORKING_AGAIN,
 )
 from .sessions import refresh_sessions
-from .github import already_merged, finish, gh, github, in_base_here_or_remote, merged_here, only_merged_base, own_work, pr_adopt, pr_open, pr_pending, pr_problem, pr_view, pr_waits, update_main, watch_main
+from .github import already_merged, finish, gh, github, in_base_here_or_remote, merged_here, only_merged_base, own_work, pr_adopt, pr_open, pr_pending, pr_problem, pr_queue, pr_view, pr_waits, update_main, watch_main
 from .launch import (
     base_ref, brief, caller_labels, caller_space, current_base, default_space, folder_for, handoff, launch, name_tabs,
     own_path, parent_for, resume_argv, retag_tabs, set_branch, tab_title, task_tabs,
@@ -714,7 +714,7 @@ def finalize(s, t):
         if t.get("pr"):
             if policy == "auto":
                 err = merge_now(s, t)
-                return msg + (f" Merging it waits: {err}" if err else " Merged; done.")
+                return msg + (" Merged; done." if not err else f" {err}" if err == QUEUED else f" Merging it waits: {err}")
             return msg + " It merges by itself once its checks pass."
         try:
             sent, started = tell(s, t, local_merge_msg(s, t), None)
@@ -975,11 +975,13 @@ def local_merge_msg(s, t):
 
 
 MERGE_FAILED = "GitHub didn't merge it"  # a merge that failed: never in the way of the next try
+QUEUED = "It's in GitHub's merge queue: done once GitHub merges it."
 
 
 def merge_now(s, t):
     """Merges the task's pull request on GitHub (squash) and tidies up here. Returns why it
-    couldn't, or None when it's merged (and the task done)."""
+    couldn't, or None when it's merged (and the task done). A base with a merge queue: the pull
+    request joins the queue and QUEUED is returned; the tick finishes the task once it merged."""
     n, repo = str(t["pr"]["number"]), t["pr"]["repo"]
     v = pr_view(t)
     s.dirty = True
@@ -987,6 +989,11 @@ def merge_now(s, t):
     if not v:
         return f"Couldn't reach pull request #{n} on GitHub."
     if v.get("state") != "MERGED":
+        if t["pr"].get("queued"):
+            q = pr_queue(t)
+            if q is None or q["queued"]:  # never asked twice while GitHub can't say
+                return QUEUED
+            t["pr"].pop("queued")
         problem = pr_problem(v)
         if problem:
             t["attention"], t["attention_at"] = problem, now()
@@ -997,8 +1004,17 @@ def merge_now(s, t):
         if pr_waits(v):
             t["pr"]["waiting"] = pr_waits(v)
             return t["pr"]["waiting"] + "."
-        ok, _, err = gh("pr", "merge", n, "--repo", repo, "--squash", "--delete-branch",
-                        "--match-head-commit", v.get("headRefOid") or "")
+        how = ["pr", "merge", n, "--repo", repo, "--squash", "--match-head-commit", v.get("headRefOid") or ""]
+        ok, _, err = gh(*how, "--delete-branch")
+        if not ok and "merge queue" in err:
+            # gh refuses --delete-branch on a base with a merge queue; without it the pull request
+            # joins the queue (still open). The repo's own setting deletes the branch on GitHub.
+            ok, _, err = gh(*how)
+            q = None if ok else pr_queue(t)
+            if ok or (q and q["queued"] and v.get("headRefOid") and q.get("head") == v["headRefOid"]):
+                t["pr"]["queued"], t["pr"]["checked"] = now(), 0
+                t.pop("attention", None)
+                return QUEUED
         # A one-off GitHub error can come after the merge went through: asked again.
         again = None if ok else pr_view(t)
         if not ok and (again or {}).get("state") == "MERGED":
@@ -1028,6 +1044,8 @@ def cmd_merge(args):
             error = merge_now(s, t)
             if error == "Checks are still running.":
                 error += " Merge again when they pass."
+            elif error == QUEUED:
+                how, error = "queue", None
             elif t["pr"].get("waiting"):
                 error += " Merge again once it is approved."
         else:
@@ -1039,8 +1057,9 @@ def cmd_merge(args):
         say(args, {**v, "error": error}, None) if args.json else print(f"herdr-task: {error}", file=sys.stderr)
         sys.exit(1)
     text = f"{s.ref(t)}: pull request #{t['pr']['number']} merged; done." if how == "github" else \
+        f"{s.ref(t)}: pull request #{t['pr']['number']} is in GitHub's merge queue; done once it merges." if how == "queue" else \
         f"{s.ref(t)}: merge asked of {sent}" + (" (a new agent)" if started else "")
-    say(args, {**v, "terminal": sent, "new_agent": started, "merged": how == "github"}, text)
+    say(args, {**v, "terminal": sent, "new_agent": started, "merged": how == "github", "queued": how == "queue"}, text)
 
 
 def branch_tip(s, t):
@@ -1115,6 +1134,8 @@ def cmd_accept(args):
                 # Accepted: it merges by itself once they pass, or once it's approved (Merging).
                 how = "approval" if t["pr"].get("waiting") else "checks"
                 t["auto_merge"], error = "checks", None
+            elif error == QUEUED:
+                how, error = "queue", None
         elif merged_here(s, t) or in_base(s, t):
             # Its own work already in the base branch, or none of its own: nothing to merge.
             t["merged"] = merged_here(s, t)
@@ -1135,6 +1156,7 @@ def cmd_accept(args):
             "merged": f"{s.ref(t)} accepted: merged into {t.get('base') or 'main'}; done.",
             "github": f"{s.ref(t)} accepted: pull request #{(t.get('pr') or {}).get('number')} merged; done.",
             "checks": f"{s.ref(t)} accepted: it merges once its checks pass.",
+            "queue": f"{s.ref(t)} accepted: pull request #{(t.get('pr') or {}).get('number')} is in GitHub's merge queue; done once it merges.",
             "approval": f"{s.ref(t)} accepted: it merges once the pull request is approved.",
             "agent": f"{s.ref(t)} accepted: merge asked of {sent}" + (" (a new agent)" if started else "")}[how]
     say(args, {**v, "accepted": how, "terminal": sent, "new_agent": started}, text)

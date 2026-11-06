@@ -184,6 +184,36 @@ def pr_view(task):
         return None
 
 
+QUEUE_QUERY = """query($owner: String!, $name: String!, $n: Int!) { repository(owner: $owner, name: $name) {
+  pullRequest(number: $n) { isInMergeQueue autoMergeRequest { enabledAt } mergeQueueEntry { headCommit { oid } }
+    timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) { nodes { ... on RemovedFromMergeQueueEvent { reason } } } } } }"""
+
+
+def pr_queue(task):
+    """A pull request sent to GitHub's merge queue: {"queued": still in it or waiting to join it,
+    "head": its queued commit, "reason": why the queue last removed it}, or None when GitHub can't say (gh's pr view has no
+    queue fields, so asked through its GraphQL API)."""
+    pr = task["pr"]
+    owner, _, name = pr["repo"].partition("/")
+    ok, out, _ = gh("api", "graphql", "-f", f"query={QUEUE_QUERY}", "-f", f"owner={owner}", "-f", f"name={name}",
+                    "-F", f"n={pr['number']}")
+    try:
+        p = json.loads(out)["data"]["repository"]["pullRequest"] if ok else None
+    except (ValueError, TypeError, KeyError):
+        return None
+    if not p:
+        return None
+    removed = [x.get("reason") for x in (p.get("timelineItems") or {}).get("nodes") or [] if x.get("reason")]
+    return {"queued": bool(p.get("isInMergeQueue") or p.get("autoMergeRequest")),
+            "head": ((p.get("mergeQueueEntry") or {}).get("headCommit") or {}).get("oid"),
+            "reason": removed[-1] if removed else None}
+
+
+def queue_removed(reason):
+    """What the person reads when the merge queue gave the pull request back."""
+    return "The merge queue removed it: " + ((reason or "").strip().rstrip(".") or "it failed there") + "."
+
+
 def pr_problem(v):
     """What keeps a pull request from merging, for the person; None when nothing does."""
     if v.get("state") == "CLOSED":

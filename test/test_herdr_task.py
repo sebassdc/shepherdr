@@ -877,6 +877,169 @@ class BackToWork(unittest.TestCase):
         self.commands.cmd_accept(self.args())
         self.assertEqual((t["state"], t.get("merged")), ("done", True))
 
+    # A base branch with GitHub's merge queue: gh refuses --delete-branch there, and without it the pull
+    # request only joins the queue (still open): the task stays Merging until GitHub says MERGED.
+    QUEUE_ERR = "Cannot use `-d` or `--delete-branch` when merge queue enabled"
+
+    def queue_repo(self, queue=None):
+        """GitHub with a merge queue on the base (or none): the gh merge calls made, and pr_queue's answer."""
+        calls, done = [], []
+        def gh(*a, **k):
+            calls.append(a)
+            return (False, "", self.QUEUE_ERR) if queue is not None and "--delete-branch" in a else (True, "", "")
+        fine = {"state": "OPEN", "mergeable": "MERGEABLE", "statusCheckRollup": [], "headRefOid": "abc"}
+        for mod, name, value in ((self.commands, "pr_view", lambda t: fine), (self.commands, "gh", gh),
+                                 (self.commands, "pr_queue", lambda t: queue), (self.tick, "pr_queue", lambda t: queue),
+                                 (self.commands, "watch_main", lambda *a: None), (self.commands, "update_main", lambda *a: None),
+                                 (self.tick, "pr_news", lambda *a: None), (self.tick, "at_work", lambda s, t: False),
+                                 (self.tick, "watch_main", lambda *a: None)):
+            p = self.mock.patch.object(mod, name, value, create=True)
+            p.start()
+            self.addCleanup(p.stop)
+        for mod in (self.commands, self.tick):
+            p = self.mock.patch.object(mod, "finish", lambda s, t, even_if_busy=False: (t.update(state="done"), done.append(t["id"])))
+            p.start()
+            self.addCleanup(p.stop)
+        return calls, done
+
+    def test_a_merge_queue_base_enqueues_and_the_task_waits_for_github(self):
+        t = self.pr_task()
+        queue = {"queued": True, "reason": None}
+        calls, done = self.queue_repo(queue)
+        self.commands.cmd_accept(self.args())
+        self.assertEqual(calls[1], ("pr", "merge", "593", "--repo", "o/r", "--squash", "--match-head-commit", "abc"))
+        self.assertEqual((t["state"], t.get("merged"), done), ("ready", None, []))
+        self.assertTrue(t["pr"]["queued"])
+        self.assertEqual(self.agents.task_status(t, []), ("merging", None, "In GitHub's merge queue"))
+        # the tick's own merge (merge once checks pass) never asks GitHub again while it's queued
+        t["auto_merge"] = "checks"
+        self.assertEqual(self.commands.merge_now(self.store, t), self.commands.QUEUED)
+        self.assertEqual(len(calls), 2)
+        # GitHub merged it: the tick marks it done
+        merged = {"state": "MERGED", "mergeCommit": {"oid": "f00"}}
+        with self.mock.patch.object(self.tick, "pr_view", lambda t: merged):
+            t["pr"]["checked"] = 0
+            self.tick.facts(self.store, t, {"attention": [], "done": []})
+        self.assertEqual((t["state"], t.get("merged")), ("done", True))
+
+    def test_a_pull_request_the_merge_queue_removed_needs_attention(self):
+        t = self.pr_task()
+        queue = {"queued": True, "reason": None}
+        self.queue_repo(queue)
+        self.commands.cmd_accept(self.args())
+        queue.update(queued=False, reason='Required status check "ci" failed.')
+        fine = {"state": "OPEN", "mergeable": "MERGEABLE", "statusCheckRollup": [], "headRefOid": "abc"}
+        report = {"attention": [], "done": []}
+        with self.mock.patch.object(self.tick, "pr_view", lambda t: fine):
+            t["pr"]["checked"] = 0
+            self.tick.facts(self.store, t, report)
+        self.assertEqual(t["attention"], 'The merge queue removed it: Required status check "ci" failed.')
+        self.assertNotIn("queued", t["pr"])
+        self.assertEqual((t["state"], report["attention"]), ("ready", [t["id"]]))
+        self.assertEqual(self.agents.task_status(t, []), ("needs", "attention", t["attention"]))
+
+    def test_queue_removal_with_failing_checks_waits_for_an_explicit_retry(self):
+        t = self.pr_task()
+        t["auto_merge"] = "checks"
+        queue = {"queued": True, "reason": None}
+        calls, done = self.queue_repo(queue)
+        self.commands.cmd_accept(self.args())
+        queue.update(queued=False, reason='Required status check "ci" failed.')
+        view = {"state": "OPEN", "mergeable": "MERGEABLE", "headRefOid": "abc",
+                "statusCheckRollup": [{"name": "ci", "conclusion": "FAILURE"}]}
+        notice = 'The merge queue removed it: Required status check "ci" failed.'
+        with self.mock.patch.object(self.tick, "pr_view", lambda t: view):
+            for checks in (view["statusCheckRollup"], view["statusCheckRollup"], []):
+                view["statusCheckRollup"] = checks
+                t["pr"]["checked"] = 0
+                self.tick.facts(self.store, t, {"attention": [], "done": []})
+                self.assertEqual(t["attention"], notice)
+                self.assertEqual(self.agents.task_status(t, [])[0], "needs")
+        self.assertEqual((len(calls), done), (2, []))
+        queue.update(queued=True, reason=None)
+        self.commands.cmd_accept(self.args())
+        self.assertNotIn("attention", t)
+        self.assertTrue(t["pr"]["queued"])
+
+    def test_required_approval_then_queue_then_merge(self):
+        t = self.pr_task()
+        t["auto_merge"] = "checks"
+        calls, done = self.queue_repo({"queued": True, "head": "abc", "reason": None})
+        view = dict(self.green)
+        with self.mock.patch.object(self.commands, "pr_view", lambda t: view), \
+                self.mock.patch.object(self.tick, "pr_view", lambda t: view):
+            def tick():
+                t["pr"]["checked"] = 0
+                report = {"attention": [], "done": [], "started": []}
+                self.tick.tick_store(self.store, report)
+                self.assertEqual(report["attention"], [])
+            tick()
+            self.assertEqual(calls, [])
+            self.assertEqual(self.agents.task_status(t, []),
+                             ("merging", None, "Waiting for an approval on the pull request"))
+            view.update(reviewDecision="APPROVED", mergeStateStatus="CLEAN")
+            tick()
+            self.assertEqual((len(calls), done, t["state"]), (2, [], "ready"))
+            self.assertNotIn("--delete-branch", calls[-1])
+            self.assertIn("--match-head-commit", calls[-1])
+            self.assertNotIn("waiting", t["pr"])
+            self.assertEqual(self.agents.task_status(t, []), ("merging", None, "In GitHub's merge queue"))
+            tick()
+            self.assertEqual((len(calls), done), (2, []))
+            view.update(state="MERGED", mergeCommit={"oid": "f00"})
+            tick()
+            self.assertEqual((t["state"], t.get("merged"), done), ("done", True, [t["id"]]))
+
+    def test_pr_queue_reads_githubs_answer(self):
+        import herdr_task.github as github
+        task = {"pr": {"number": 7, "repo": "o/r"}}
+        def answer(pr, ok=True):
+            out = json.dumps({"data": {"repository": {"pullRequest": pr}}})
+            with self.mock.patch.object(github, "gh", lambda *a, **k: (ok, out, "")):
+                return github.pr_queue(task)
+        removed = {"nodes": [{"reason": "Required status check \"ci\" failed"}]}
+        self.assertEqual(answer({"isInMergeQueue": True, "autoMergeRequest": None, "timelineItems": {"nodes": []},
+                                 "mergeQueueEntry": {"headCommit": {"oid": "abc"}}}),
+                         {"queued": True, "head": "abc", "reason": None})
+        self.assertEqual(answer({"isInMergeQueue": False, "autoMergeRequest": {"enabledAt": "x"}, "timelineItems": removed})["queued"], True)
+        self.assertEqual(answer({"isInMergeQueue": False, "autoMergeRequest": None, "timelineItems": removed}),
+                         {"queued": False, "head": None, "reason": 'Required status check "ci" failed'})
+        self.assertIsNone(answer(None))
+        self.assertIsNone(answer({"isInMergeQueue": True}, ok=False))
+        with self.mock.patch.object(github, "gh", lambda *a, **k: (True, "not json", "")):
+            self.assertIsNone(github.pr_queue(task))
+
+    def test_a_pull_request_already_in_the_queue_counts_as_queued(self):
+        t = self.pr_task()
+        calls, done = self.queue_repo({"queued": True, "head": "abc", "reason": None})
+        gh = lambda *a, **k: (calls.append(a), (False, "", self.QUEUE_ERR if "--delete-branch" in a else "already queued"))[1]
+        with self.mock.patch.object(self.commands, "gh", gh):
+            self.commands.cmd_accept(self.args())
+        self.assertEqual((t["state"], done, "attention" in t), ("ready", [], False))
+        self.assertTrue(t["pr"]["queued"])
+
+    def test_a_failed_pinned_enqueue_never_accepts_a_different_or_unknown_queued_head(self):
+        t = self.pr_task()
+        queue = {"queued": True, "head": "different", "reason": None}
+        calls, done = self.queue_repo(queue)
+        def gh(*a, **k):
+            return False, "", self.QUEUE_ERR if "--delete-branch" in a else "head SHA does not match"
+        with self.mock.patch.object(self.commands, "gh", gh):
+            for head in ("different", None):
+                queue["head"] = head
+                with self.assertRaises(SystemExit):
+                    self.commands.cmd_accept(self.args())
+                self.assertIn("head SHA does not match", t["attention"])
+                self.assertNotIn("queued", t["pr"])
+                self.assertEqual((t["state"], done), ("ready", []))
+
+    def test_a_base_without_a_merge_queue_merges_as_before(self):
+        t = self.pr_task()
+        calls, done = self.queue_repo(None)
+        self.commands.cmd_accept(self.args())
+        self.assertEqual([sorted(c) for c in calls], [sorted(("pr", "merge", "593", "--repo", "o/r", "--squash", "--delete-branch", "--match-head-commit", "abc"))])
+        self.assertEqual((t["state"], t.get("merged"), done), ("done", True, [t["id"]]))
+
     # A pull request its agent opened itself (SHEP-13: "a pull request for branch ... already exists"):
     # ready and Accept adopt it, never fail on it.
     def github_has(self, prs):

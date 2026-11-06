@@ -13,7 +13,7 @@ from .settings import machine_name, worker_argv
 from .agents import agent_log, agent_running, busy_again, detail, held_ask, live_agents, status_word, task_status
 from .provider import NUDGE, provider_cut, provider_error, PROVIDER_WAITS
 from .sessions import find_lost_logs, refresh_sessions, session_of
-from .github import already_merged, finish, github, merged_here, pr_merged, pr_pending, pr_problem, pr_view, pr_waits, watch_main, BEHIND
+from .github import already_merged, finish, github, merged_here, pr_merged, pr_pending, pr_problem, pr_queue, pr_view, pr_waits, queue_removed, watch_main, BEHIND
 from .launch import default_space
 from .store import locate, read_list, Store, store_files
 from .queues import machine_hold, refresh_ext, running_count, set_hold, waiting_ext, waiting_for
@@ -55,6 +55,14 @@ def facts(s, t, report):
             report["done"].append(t["id"])
             return
         problem = pr_problem(v)
+        if pr.get("queued"):
+            # In GitHub's merge queue: merged later (above), or given back (a check failed there).
+            q = pr_queue(t)
+            if q and not q["queued"]:
+                pr.pop("queued")
+                problem = queue_removed(q["reason"] or problem)
+        elif v.get("state") == "OPEN" and t.get("attention", "").startswith("The merge queue removed it"):
+            problem = t["attention"]
         # A required approval not given yet: Merging, calmly waiting (no try, no news) until it is.
         pr["waiting"] = pr_waits(v)
         if not pr["waiting"]:
