@@ -287,6 +287,8 @@ def cmd_start(args):
             raise Fail(f"{s.ref(t)} is done. Reopen it first.")
         q = t.get("queue") or {}
         space = bare(args.space) if args.space else (q.get("space") or default_space())
+        if args.space:
+            t["space"] = space  # its space from now, queued too (This space, its branch's pattern), as add keeps it
         if args.here:
             t["mode"] = "here"
         elif args.worktree and worktrees_on(s, space):

@@ -1827,6 +1827,14 @@ class FolderSpace(unittest.TestCase):
         self.worktrees_off_in_the_repos_own_space()
         self.add("Fix it", here=True)
         self.assertEqual(self.run_cmd(self.commands.cmd_start, id="1", worktree=True, space="sp1")["mode"], "worktree")
+        self.assertEqual(self.task(1).get("space"), "sp1")
+
+    def test_a_start_queued_for_a_space_is_that_spaces(self):
+        from unittest import mock
+        self.add("Fix it")
+        with mock.patch.object(self.commands, "queue_reason", lambda s, t: "two running"):
+            v = self.run_cmd(self.commands.cmd_start, id="1", space="sp2")
+        self.assertEqual((v["state"], self.task(1).get("space")), ("queued", "sp2"))
 
     def test_an_automations_task_is_its_spaces_from_the_start(self):
         from unittest import mock
