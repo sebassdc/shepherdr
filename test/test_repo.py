@@ -342,6 +342,18 @@ class SessionNote(unittest.TestCase):
             self.assertTrue(ctx.endswith('`herdr-artifact guide` first. Reactions (on in Settings): <hc react="👀" to="x"/>'), ctx[-120:])
             self.assertEqual(asked.split(), ["_session-note", terminal])
 
+    def test_shell_scripts_parse(self):
+        # Each shipped .sh parses with the shell its first line names; on a Mac that is bash 3.2, which once
+        # mis-read this hook's apostrophes in a heredoc inside $( ) and failed every Claude session's hook.
+        import subprocess
+        files = subprocess.run(["git", "ls-files", "*.sh"], cwd=ROOT, capture_output=True, text=True).stdout.split()
+        self.assertIn("mods/chat/session-note.sh", files)
+        for f in files:
+            with open(os.path.join(ROOT, f)) as fh:
+                shell = fh.readline()[2:].split()
+            out = subprocess.run([*shell, "-n", os.path.join(ROOT, f)], capture_output=True, text=True)
+            self.assertEqual(out.returncode, 0, f"{f}: {out.stderr}")
+
     def test_outside_herdr_it_says_nothing(self):
         out, asked = self.run_hook(None, "")
         self.assertEqual(out, "")
