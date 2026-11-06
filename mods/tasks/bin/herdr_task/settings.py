@@ -110,12 +110,12 @@ def settings_layers(s, space=None):
     except (OSError, ValueError):
         d = {}
     spaces = d.get("spaces") or {}
-    from .store import locate, space_repos  # store imports this module
+    from .store import space_repos  # store imports this module
 
     def works_here(v):
         # its own folder, or a folder space over this repo (its tasks keep their lists in its repos)
         f = (v or {}).get("folder")
-        return bool(f) and (f == s.loc["folder"] or any(locate(r)["folder"] == s.loc["folder"] for r in space_repos(f)))
+        return bool(f) and (f == s.loc["folder"] or s.loc["folder"] in space_repos(f))
     mine = [v for k, v in spaces.items() if works_here(v)]
     pick = (spaces.get(bare(space)) if space and works_here(spaces.get(bare(space))) else None) or (mine[0] if mine else None)
     machine = (d.get("machines") or {}).get(d.get("here") or LOCAL_MACHINE)

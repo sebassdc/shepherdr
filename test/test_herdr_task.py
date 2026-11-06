@@ -1802,8 +1802,32 @@ class FolderSpace(unittest.TestCase):
 
     def test_list_lists_each_repos_tasks(self):
         self.add("Fix it", space="sp1")
+        self.add("Tidy", folder=self.tmp, here=True)  # the folder's own (--here) tasks stay listed too
         out = self.run_cmd(self.commands.cmd_list, folder=self.tmp, all=False, archived=False)
-        self.assertEqual([(g["name"], [t["title"] for t in g["tasks"]]) for g in out], [("app", ["Fix it"])])
+        self.assertEqual([(g["name"], [t["title"] for t in g["tasks"]]) for g in out],
+                         [(os.path.basename(self.tmp), ["Tidy"]), ("app", ["Fix it"])])
+
+    def test_add_takes_worktrees_from_the_space_it_names(self):
+        import herdr_task.settings as settings
+        with open(settings.SETTINGS, "w") as f:
+            json.dump({"spaces": {"sp0": {"folder": os.path.realpath(self.folder), "tasks": {"worktrees": False}},
+                                  "sp1": {"folder": self.tmp, "tasks": {"worktrees": True}}}}, f)
+        self.store_mod._space_repos.cache_clear()
+        self.assertEqual(self.add("In the folder space", space="sp1")["mode"], "worktree")
+        self.assertEqual(self.add("In the repo's own space", space="sp0")["mode"], "here")
+
+    def test_a_repo_gone_from_the_folder_breaks_no_settings(self):
+        import herdr_task.settings as settings
+        gone = os.path.join(self.tmp, "a-gone")  # listed before "app"
+        subprocess.run(["git", "init", "-q", gone], check=True)
+        with open(settings.SETTINGS, "w") as f:
+            json.dump({"spaces": {"sp1": {"folder": self.tmp, "tasks": {"merge": "ask me first"}}}}, f)
+        self.store_mod._space_repos.cache_clear()
+        self.assertIn(os.path.realpath(gone), self.store_mod.space_repos(self.tmp))
+        import shutil
+        shutil.rmtree(gone)  # still in the minute's cache
+        with self.store_mod.Store(self.store_mod.locate(self.folder), write=False) as s:
+            self.assertEqual(settings.settings_layers(s)[2].get("folder"), self.tmp)
 
     def test_add_keeps_its_space(self):
         self.add("Fix it", space="sp1")
@@ -1819,7 +1843,7 @@ class FolderSpace(unittest.TestCase):
         import herdr_task.settings as settings
         with open(settings.SETTINGS, "w") as f:
             json.dump({"spaces": {"sp1": {"folder": self.tmp, "tasks": {"merge": "ask me first"}}}}, f)
-        self.store_mod.space_repos.cache_clear()
+        self.store_mod._space_repos.cache_clear()
         with self.store_mod.Store(self.store_mod.locate(self.folder), write=False) as s:
             self.assertEqual(settings.settings_layers(s, "sp1")[2], {"folder": self.tmp, "tasks": {"merge": "ask me first"}})
             self.assertEqual(settings.settings_layers(s)[2].get("folder"), self.tmp)

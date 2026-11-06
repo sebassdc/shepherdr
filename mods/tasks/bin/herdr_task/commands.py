@@ -48,10 +48,10 @@ def cmd_list(args):
         folders = [d["folder"] for d in map(read_list, store_files()) if is_task_list(d)]
     else:
         loc = locate(args.folder)
-        # A folder space lists its repos' tasks, one group each, as --all does.
+        # A folder space lists its own tasks (--here ones) and its repos', one group each, as --all does.
         inside = repos_in(loc["folder"]) if loc["kind"] == "folder" else []
         args.all = bool(inside)
-        folders = [locate(r)["folder"] for r in inside] or [loc["folder"]]
+        folders = [loc["folder"]] + [locate(r)["folder"] for r in inside]
     groups = []
     for folder in folders:
         if not os.path.isdir(folder):
@@ -103,11 +103,11 @@ def cmd_add(args):
         repo = s.loc["kind"] == "repo"
         if args.worktree and not repo:
             raise Fail("Worktrees need a git repo; this folder isn't one.")
-        # The person's setting wins: worktrees off for this repo means in the folder, --worktree or not.
-        mode = "here" if args.here or not worktrees_on(s) else "worktree"
+        space = bare(args.space) if args.space else caller_space()
+        # The person's setting wins: worktrees off for this repo (or its space) means in the folder, --worktree or not.
+        mode = "here" if args.here or not worktrees_on(s, space) else "worktree"
         t = s.new(args.title.strip(), prompt, mode)
         set_opts(t, args)
-        space = bare(args.space) if args.space else caller_space()
         if space:
             # Kept from the start: a folder space finds its tasks (and their settings) in its repos' lists by it.
             t["space"] = space

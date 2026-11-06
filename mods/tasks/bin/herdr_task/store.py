@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import time
 
 from .base import Fail, git, hc_json, HOME, LEGACY, MAX_RUNNING, now, run, STORE
 from .settings import settings_for
@@ -44,14 +45,25 @@ def repos_in(folder):
 
 
 
-@functools.lru_cache(maxsize=64)
 def space_repos(folder):
-    """A folder space's repos (its folder isn't in a git repo but holds some), else []."""
+    """A folder space's repos, as their task folders (its folder isn't in a git repo but holds some), else [].
+    Looked again each minute: the scheduler lives long, and repos come and go."""
+    return _space_repos(folder, int(time.time() // 60))
+
+
+@functools.lru_cache(maxsize=64)
+def _space_repos(folder, _minute):
     try:
         loc = locate(folder) if folder else None
     except Fail:
         return []
-    return repos_in(loc["folder"]) if loc and loc["kind"] == "folder" else []
+    out = []
+    for r in repos_in(loc["folder"]) if loc and loc["kind"] == "folder" else []:
+        try:
+            out.append(locate(r)["folder"])
+        except Fail:  # gone since listed
+            pass
+    return out
 
 
 def refuse_folder_space(folder, here=False):
