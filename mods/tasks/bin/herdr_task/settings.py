@@ -6,7 +6,7 @@ import os
 import re
 import shutil
 
-from .base import Fail, HOME, MAX_RUNNING
+from .base import Fail, HOME, MAX_RUNNING, STORE
 
 
 # What each agent key starts by default. Unknown keys run as themselves; --argv overrides.
@@ -347,6 +347,32 @@ def other_cli(agent):
     return other if other and shutil.which(other) else agent
 
 
+# How each CLI is signed in again, for a reviewer that isn't (takeover.py's NAMES, with its command).
+SIGN_IN = {"claude": ("Claude Code", "claude auth login"), "codex": ("Codex", "codex login")}
+CLI_CHECK = os.path.join(os.path.dirname(STORE), "cli-check.json")  # takeover.py's sign-in check
+
+
+def cli_here(kind):
+    """This machine's last word on a CLI from the scheduler's sign-in check (`codex login status`,
+    `claude auth status`; takeover.py's cli_check_pass, at most CHECK_EVERY old): "ready",
+    "signed-out", "missing" or None (unknown). Only read: a brief never waits on the CLIs."""
+    try:
+        with open(CLI_CHECK) as f:
+            return ((json.load(f).get("machines") or {}).get("") or {}).get(kind)
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def reviewer_pick(who, own, state):
+    """(reviewer, why): a reviewer CLI that isn't signed in here would sit at its sign-in screen, so
+    the task's own CLI reviews instead (as other_cli when the other isn't installed), and why says
+    what to do. Unknown or ready: as asked."""
+    if state != "signed-out" or who == own or who not in SIGN_IN:
+        return who, None
+    name, cmd = SIGN_IN[who]
+    return own, f"{name} isn't signed in here: run `{cmd}`, then ask for the review again"
+
+
 def task_settings(s, t, space=None, argv=None):
     """The settings that shape this task's work, each {label, text, value, by}."""
     space = space or t.get("space")
@@ -378,9 +404,14 @@ def task_settings(s, t, space=None, argv=None):
         for f in ("model", "effort"):
             if t.get(f"reviewer_{f}"):
                 rv[f] = t[f"reviewer_{f}"]
-        who = rv.get("agent") or other_cli(agent)
+        want = rv.get("agent") or other_cli(agent)
+        who, why = reviewer_pick(want, agent, cli_here(want))
+        if why:  # its model and effort were for the CLI that can't run
+            rv = {}
         text = who + (f", model {rv['model']}" if rv.get("model") else "") + (f", effort {rv['effort']}" if rv.get("effort") else "")
-        if not rv.get("agent"):
+        if why:
+            text += f" (your own CLI: {why}. Tell the person so in your chat)"
+        elif not rv.get("agent"):
             text += " (the other CLI)" if who != agent else " (your own CLI: no other is installed)"
         add("Reviewer", text, {"agent": who, "model": rv.get("model"), "effort": rv.get("effort")}, rv_by)
         must = sets.get("must_fix") or (k.get("must_fix") if k.get("must_fix") in LEVELS else "major")
