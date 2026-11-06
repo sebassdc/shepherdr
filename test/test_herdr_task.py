@@ -950,6 +950,80 @@ class BackToWork(unittest.TestCase):
         self.assertEqual((t["state"], t["pr"]["number"]), ("done", 599))
         self.assertNotIn("attention", t)
 
+    # Merge after checks under a base that requires an approval: GitHub refuses the merge until one
+    # lands, so none is tried; the task reads Merging, waiting for it (never Needs you, no news).
+    def waits_for(self, *views):
+        """The tick's passes over a Ready pull request set to merge after checks, GitHub giving these
+        views in turn; any merge attempt is recorded."""
+        views, tried = list(views), []
+        done = self.merging([], [])
+        for mod in (self.tick, self.commands):
+            p = self.mock.patch.object(mod, "pr_view", lambda t: views[0])
+            p.start()
+            self.addCleanup(p.stop)
+
+        def merge(*a, **k):
+            tried.append(a)
+            return True, "", ""
+        for mod, name, value in ((self.commands, "gh", merge), (self.tick, "pr_news", lambda *a: None)):
+            p = self.mock.patch.object(mod, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        t = self.pr_task()
+        t["auto_merge"] = "checks"
+
+        def tick(view=None):
+            if view:
+                views[0] = view
+            t["pr"]["checked"] = 0
+            report = {"attention": [], "done": [], "started": []}
+            self.tick.tick_store(self.store, report)
+            return report
+        return t, tick, tried, done
+
+    green = {"state": "OPEN", "mergeable": "MERGEABLE", "statusCheckRollup": [{"name": "check", "conclusion": "SUCCESS"}],
+             "headRefOid": "abc", "mergeStateStatus": "BLOCKED", "reviewDecision": "REVIEW_REQUIRED"}
+
+    def test_a_required_approval_is_waited_for_not_tried(self):
+        t, tick, tried, done = self.waits_for(self.green)
+        for _ in range(3):
+            report = tick()
+            self.assertEqual((tried, report["attention"], report["done"]), ([], [], []))
+            self.assertNotIn("attention", t)
+            self.assertEqual(self.agents.task_status(t, []), ("merging", None, "Waiting for an approval on the pull request"))
+        # a reviewer asked for changes: still no try, still calm
+        tick(dict(self.green, reviewDecision="CHANGES_REQUESTED"))
+        self.assertEqual((tried, t["state"]), ([], "ready"))
+        self.assertEqual(self.agents.task_status(t, [])[:2], ("merging", None))
+        # approved: the next pass merges it
+        tick(dict(self.green, reviewDecision="APPROVED", mergeStateStatus="CLEAN"))
+        self.assertEqual(len(tried), 1)
+        self.assertEqual(tried[0][:2], ("pr", "merge"))
+        self.assertEqual((t["state"], t.get("merged"), done), ("done", True, [7]))
+        self.assertNotIn("waiting", t["pr"])
+
+    def test_without_a_review_rule_it_merges_as_before(self):
+        t, tick, tried, done = self.waits_for(dict(self.green, reviewDecision="", mergeStateStatus="CLEAN"))
+        tick()
+        self.assertEqual((len(tried), t["state"]), (1, "done"))
+
+    def test_a_branch_behind_under_an_up_to_date_rule_is_said_once(self):
+        t, tick, tried, done = self.waits_for(dict(self.green, reviewDecision="APPROVED", mergeStateStatus="BEHIND"))
+        first, second = tick(), tick()
+        self.assertEqual(tried, [])
+        self.assertEqual((first["attention"], second["attention"]), ([7], []))  # one needs-you, not one per pass
+        self.assertTrue(t["attention"].startswith("Its branch is behind the base branch"))
+        tick(dict(self.green, reviewDecision="APPROVED", mergeStateStatus="CLEAN"))  # brought up to date
+        self.assertEqual((len(tried), t["state"]), (1, "done"))
+
+    def test_accept_waits_for_a_required_approval(self):
+        t, tick, tried, done = self.waits_for(self.green)
+        t.pop("auto_merge")  # merge setting: ask me first
+        self.commands.cmd_accept(self.args())
+        self.assertEqual((tried, t["state"], t["auto_merge"]), ([], "ready", "checks"))
+        self.assertNotIn("attention", t)
+        self.assertEqual(self.agents.task_status(t, []), ("merging", None, "Waiting for an approval on the pull request"))
+
     def test_the_tick_clears_a_failed_merge(self):
         t = self.pr_task()
         t["attention"], t["pr"]["checked"] = "GitHub didn't merge it: GraphQL: Something went wrong", 0

@@ -19,7 +19,7 @@ from .agents import (
     agent_running, busy_again, detail, fit, LINE_MAX, live_agents, ready_turns, STATUSES, SUMMARY_MAX, WORKING_AGAIN,
 )
 from .sessions import refresh_sessions
-from .github import already_merged, finish, gh, github, in_base_here_or_remote, merged_here, own_work, pr_adopt, pr_open, pr_pending, pr_problem, pr_view, update_main, watch_main
+from .github import already_merged, finish, gh, github, in_base_here_or_remote, merged_here, own_work, pr_adopt, pr_open, pr_pending, pr_problem, pr_view, pr_waits, update_main, watch_main
 from .launch import (
     base_ref, brief, caller_labels, caller_space, current_base, default_space, folder_for, handoff, launch, name_tabs,
     own_path, parent_for, resume_argv, retag_tabs, set_branch, tab_title, task_tabs,
@@ -930,6 +930,11 @@ def merge_now(s, t):
             return problem
         if pr_pending(v):
             return "Checks are still running."
+        # A required approval not given yet: GitHub would refuse, so it waits (the tick tries again).
+        t["pr"]["waiting"] = pr_waits(v)
+        if t["pr"]["waiting"]:
+            return t["pr"]["waiting"] + "."
+        t["pr"].pop("waiting")
         ok, _, err = gh("pr", "merge", n, "--repo", repo, "--squash", "--delete-branch",
                         "--match-head-commit", v.get("headRefOid") or "")
         # A one-off GitHub error can come after the merge went through: asked again.
@@ -1042,9 +1047,10 @@ def cmd_accept(args):
         elif t.get("pr"):
             how = "github"
             error = merge_now(s, t)
-            if error == "Checks are still running.":
-                # Accepted: it merges by itself once they pass (Merging).
-                t["auto_merge"], how, error = "checks", "checks", None
+            if error == "Checks are still running." or t["pr"].get("waiting"):
+                # Accepted: it merges by itself once they pass, or once it's approved (Merging).
+                how = "approval" if t["pr"].get("waiting") else "checks"
+                t["auto_merge"], error = "checks", None
         elif merged_here(s, t) or in_base(s, t):
             # Its own work already in the base branch, or none of its own: nothing to merge.
             t["merged"] = merged_here(s, t)
@@ -1065,6 +1071,7 @@ def cmd_accept(args):
             "merged": f"{s.ref(t)} accepted: merged into {t.get('base') or 'main'}; done.",
             "github": f"{s.ref(t)} accepted: pull request #{(t.get('pr') or {}).get('number')} merged; done.",
             "checks": f"{s.ref(t)} accepted: it merges once its checks pass.",
+            "approval": f"{s.ref(t)} accepted: it merges once the pull request is approved.",
             "agent": f"{s.ref(t)} accepted: merge asked of {sent}" + (" (a new agent)" if started else "")}[how]
     say(args, {**v, "accepted": how, "terminal": sent, "new_agent": started}, text)
 

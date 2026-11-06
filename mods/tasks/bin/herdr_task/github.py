@@ -158,7 +158,7 @@ PENDING = {"QUEUED", "IN_PROGRESS", "PENDING", "WAITING", "REQUESTED", "EXPECTED
 
 def pr_view(task):
     pr = task["pr"]
-    ok, out, _ = gh("pr", "view", str(pr["number"]), "--repo", pr["repo"], "--json", "state,mergeable,headRefOid,statusCheckRollup,mergeCommit")
+    ok, out, _ = gh("pr", "view", str(pr["number"]), "--repo", pr["repo"], "--json", "state,mergeable,headRefOid,statusCheckRollup,mergeCommit,reviewDecision,mergeStateStatus")
     try:
         return json.loads(out) if ok else None
     except ValueError:
@@ -171,12 +171,25 @@ def pr_problem(v):
         return "The pull request was closed."
     if v.get("mergeable") == "CONFLICTING":
         return "It conflicts with the base branch."
+    if v.get("mergeStateStatus") == "BEHIND":
+        return BEHIND
     checks = v.get("statusCheckRollup") or []
     bad = [c.get("name") or c.get("context") or "a check" for c in checks
            if (c.get("conclusion") or c.get("state") or "").upper() in BAD]
     if bad:
         return "Checks failing: " + ", ".join(bad[:3]) + (" and more." if len(bad) > 3 else ".")
     return None
+
+
+BEHIND = "Its branch is behind the base branch, which must be up to date to merge: bring the base into it."
+WAITS = {"REVIEW_REQUIRED": "Waiting for an approval on the pull request",
+         "CHANGES_REQUESTED": "Waiting for an approval: a reviewer asked for changes on the pull request"}
+
+
+def pr_waits(v):
+    """Why a pull request calmly waits on people before it can merge (a required approval not given
+    yet): GitHub would refuse the merge, so none is tried. None: approved, or no review required."""
+    return WAITS.get(v.get("reviewDecision") or "")
 
 
 def pr_pending(v):
