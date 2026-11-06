@@ -19,7 +19,7 @@ from .agents import (
     agent_running, busy_again, detail, fit, LINE_MAX, live_agents, ready_turns, STATUSES, SUMMARY_MAX, WORKING_AGAIN,
 )
 from .sessions import refresh_sessions
-from .github import already_merged, finish, gh, github, merged_here, own_work, pr_adopt, pr_open, pr_pending, pr_problem, pr_view, update_main, watch_main
+from .github import already_merged, finish, gh, github, in_base_here_or_remote, merged_here, own_work, pr_adopt, pr_open, pr_pending, pr_problem, pr_view, update_main, watch_main
 from .launch import (
     base_ref, brief, caller_labels, caller_space, current_base, default_space, folder_for, handoff, launch, name_tabs,
     own_path, parent_for, resume_argv, retag_tabs, set_branch, tab_title, task_tabs,
@@ -443,7 +443,7 @@ def review_refusal(s, t, wt):
     on, rounds = review_limits(s, t)
     if not on or not t.get("review_gate"):
         return None
-    if wt and t.get("start") and t.get("head") == t["start"]:
+    if wt and t.get("start") and in_base(s, t):
         return None  # no commits of its own: nothing to review (nothing to merge)
     revs = [r for r in t.get("reviews") or [] if r.get("result") in REVIEWED and (r.get("at") or 0) >= (t.get("started") or 0)]
     head = t.get("head") if wt else None
@@ -979,10 +979,11 @@ def branch_tip(s, t):
 
 
 def in_base(s, t):
-    """Its branch holds nothing its base branch doesn't: no commits of its own, or it only caught
-    up with its base (`git merge --ff-only main`, SHEP-23). Nothing to merge, and never merged."""
+    """Its branch holds nothing its base branch doesn't, here or on its remote: no commits of its
+    own, or it only caught up with its base (`git merge --ff-only main`, SHEP-23, or a rebase onto
+    origin/main). Nothing to merge, and never merged."""
     tip = branch_tip(s, t)
-    return bool(tip) and (tip == t.get("start") or git(s.loc["folder"], "merge-base", "--is-ancestor", tip, t.get("base") or "main")[0])
+    return bool(tip) and (tip == t.get("start") or in_base_here_or_remote(s.loc["folder"], tip, t.get("base") or "main"))
 
 
 def ff_merge(s, t):
