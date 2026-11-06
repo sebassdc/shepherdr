@@ -285,13 +285,13 @@ def cmd_start(args):
             raise Fail(f"{s.ref(t)} is already running ({live[0]['address']}). Use switch or resume.")
         if t["state"] == "done":
             raise Fail(f"{s.ref(t)} is done. Reopen it first.")
-        if args.here:
-            t["mode"] = "here"
-        elif args.worktree and worktrees_on(s):
-            t["mode"] = "worktree"
-        set_branch(s, t, getattr(args, "branch", None))
         q = t.get("queue") or {}
         space = bare(args.space) if args.space else (q.get("space") or default_space())
+        if args.here:
+            t["mode"] = "here"
+        elif args.worktree and worktrees_on(s, space):
+            t["mode"] = "worktree"
+        set_branch(s, t, getattr(args, "branch", None))
         argv = agent_argv(None, args.argv) if args.argv else worker_argv(s, t, space, args.agent) if args.agent else \
             (q.get("argv") or worker_argv(s, t, space))
         parent = args.parent or q.get("parent")

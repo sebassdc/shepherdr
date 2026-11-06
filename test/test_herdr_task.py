@@ -1816,6 +1816,29 @@ class FolderSpace(unittest.TestCase):
         self.assertEqual(self.add("In the folder space", space="sp1")["mode"], "worktree")
         self.assertEqual(self.add("In the repo's own space", space="sp0")["mode"], "here")
 
+    def worktrees_off_in_the_repos_own_space(self):
+        import herdr_task.settings as settings
+        with open(settings.SETTINGS, "w") as f:
+            json.dump({"spaces": {"sp0": {"folder": os.path.realpath(self.folder), "tasks": {"worktrees": False}},
+                                  "sp1": {"folder": self.tmp, "tasks": {"worktrees": True}}}}, f)
+        self.store_mod._space_repos.cache_clear()
+
+    def test_start_worktree_takes_the_space_it_names(self):
+        self.worktrees_off_in_the_repos_own_space()
+        self.add("Fix it", here=True)
+        self.assertEqual(self.run_cmd(self.commands.cmd_start, id="1", worktree=True, space="sp1")["mode"], "worktree")
+
+    def test_an_automations_task_is_its_spaces_from_the_start(self):
+        from unittest import mock
+        import herdr_task.automations as automations
+        self.worktrees_off_in_the_repos_own_space()
+        with mock.patch.object(automations, "queue_reason", lambda s, t: "two running"), \
+                mock.patch.object(automations, "worker_argv", lambda s, t, space: ["claude"]), \
+                mock.patch.object(automations, "begin", lambda *a: self.fail("started, not queued")):
+            with self.store_mod.Store(self.store_mod.locate(self.folder)) as s:
+                t = automations.fire(s, {"id": "a1", "title": "Nightly", "space": "sp1"}, "manual")
+        self.assertEqual((t["state"], t.get("space"), t["mode"]), ("queued", "sp1", "worktree"))
+
     def test_a_repo_gone_from_the_folder_breaks_no_settings(self):
         import herdr_task.settings as settings
         gone = os.path.join(self.tmp, "a-gone")  # listed before "app"
