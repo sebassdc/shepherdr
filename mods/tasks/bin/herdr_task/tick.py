@@ -60,7 +60,9 @@ def facts(s, t, report):
             q = pr_queue(t)
             if q and not q["queued"]:
                 pr.pop("queued")
-                problem = problem or queue_removed(q["reason"])
+                problem = queue_removed(q["reason"] or problem)
+        elif v.get("state") == "OPEN" and t.get("attention", "").startswith("The merge queue removed it"):
+            problem = t["attention"]
         t["_pr_fresh"] = not problem and not pr_pending(v)
         try:
             pr_news(s, t, v, report)

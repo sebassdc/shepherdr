@@ -938,6 +938,29 @@ class BackToWork(unittest.TestCase):
         self.assertEqual((t["state"], report["attention"]), ("ready", [t["id"]]))
         self.assertEqual(self.agents.task_status(t, []), ("needs", "attention", t["attention"]))
 
+    def test_queue_removal_with_failing_checks_waits_for_an_explicit_retry(self):
+        t = self.pr_task()
+        t["auto_merge"] = "checks"
+        queue = {"queued": True, "reason": None}
+        calls, done = self.queue_repo(queue)
+        self.commands.cmd_accept(self.args())
+        queue.update(queued=False, reason='Required status check "ci" failed.')
+        view = {"state": "OPEN", "mergeable": "MERGEABLE", "headRefOid": "abc",
+                "statusCheckRollup": [{"name": "ci", "conclusion": "FAILURE"}]}
+        notice = 'The merge queue removed it: Required status check "ci" failed.'
+        with self.mock.patch.object(self.tick, "pr_view", lambda t: view):
+            for checks in (view["statusCheckRollup"], view["statusCheckRollup"], []):
+                view["statusCheckRollup"] = checks
+                t["pr"]["checked"] = 0
+                self.tick.facts(self.store, t, {"attention": [], "done": []})
+                self.assertEqual(t["attention"], notice)
+                self.assertEqual(self.agents.task_status(t, [])[0], "needs")
+        self.assertEqual((len(calls), done), (2, []))
+        queue.update(queued=True, reason=None)
+        self.commands.cmd_accept(self.args())
+        self.assertNotIn("attention", t)
+        self.assertTrue(t["pr"]["queued"])
+
     def test_pr_queue_reads_githubs_answer(self):
         import herdr_task.github as github
         task = {"pr": {"number": 7, "repo": "o/r"}}
