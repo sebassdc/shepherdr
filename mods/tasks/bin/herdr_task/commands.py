@@ -921,6 +921,7 @@ def merge_now(s, t):
     n, repo = str(t["pr"]["number"]), t["pr"]["repo"]
     v = pr_view(t)
     s.dirty = True
+    t["pr"].pop("waiting", None)  # read fresh below: never an earlier pass's
     if not v:
         return f"Couldn't reach pull request #{n} on GitHub."
     if v.get("state") != "MERGED":
@@ -931,10 +932,9 @@ def merge_now(s, t):
         if pr_pending(v):
             return "Checks are still running."
         # A required approval not given yet: GitHub would refuse, so it waits (the tick tries again).
-        t["pr"]["waiting"] = pr_waits(v)
-        if t["pr"]["waiting"]:
+        if pr_waits(v):
+            t["pr"]["waiting"] = pr_waits(v)
             return t["pr"]["waiting"] + "."
-        t["pr"].pop("waiting")
         ok, _, err = gh("pr", "merge", n, "--repo", repo, "--squash", "--delete-branch",
                         "--match-head-commit", v.get("headRefOid") or "")
         # A one-off GitHub error can come after the merge went through: asked again.
@@ -966,6 +966,8 @@ def cmd_merge(args):
             error = merge_now(s, t)
             if error == "Checks are still running.":
                 error += " Merge again when they pass."
+            elif t["pr"].get("waiting"):
+                error += " Merge again once it is approved."
         else:
             t["merge_requested"] = now()
             s.dirty = True

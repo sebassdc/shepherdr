@@ -1024,6 +1024,18 @@ class BackToWork(unittest.TestCase):
         self.assertNotIn("attention", t)
         self.assertEqual(self.agents.task_status(t, []), ("merging", None, "Waiting for an approval on the pull request"))
 
+    def test_accept_says_a_newer_problem_not_an_old_wait(self):
+        t, tick, tried, done = self.waits_for(self.green)
+        tick()
+        self.assertIn("waiting", t["pr"])
+        t.pop("auto_merge")
+        tick(dict(self.green, mergeable="CONFLICTING"))  # the base moved on: a conflict, the review still missing
+        self.assertIn("waiting", t["pr"])
+        with self.assertRaises(SystemExit):
+            self.commands.cmd_accept(self.args())
+        self.assertEqual((tried, t["attention"]), ([], "It conflicts with the base branch."))
+        self.assertNotIn("waiting", t["pr"])
+
     def test_the_tick_clears_a_failed_merge(self):
         t = self.pr_task()
         t["attention"], t["pr"]["checked"] = "GitHub didn't merge it: GraphQL: Something went wrong", 0
