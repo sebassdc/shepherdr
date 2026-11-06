@@ -131,7 +131,7 @@ export function place(list, task, { live = [], helpers = [], loaded = true, now 
     section = (task.merge_requested && live.length) || queued || (task.auto_merge && task.pr && !task.merged) ? "merging" : "ready";
     // As herdr-task's: a pull request in GitHub's merge queue, or one that merges by itself once its checks pass.
     if (queued) why = "In GitHub's merge queue";
-    else if (section === "merging" && !(task.merge_requested && live.length)) why = "Merges once its checks pass";
+    else if (section === "merging" && !(task.merge_requested && live.length)) why = task.pr?.waiting || "Merges once its checks pass";
   }
   // Its agents' terminals aren't known yet (the machine is loading): no verdict yet.
   else if (states.some((x) => x !== "idle" && x !== "done") || (!live.length && !loaded)) section = "working";

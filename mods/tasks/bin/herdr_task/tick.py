@@ -13,7 +13,7 @@ from .settings import machine_name, worker_argv
 from .agents import agent_log, agent_running, busy_again, detail, held_ask, live_agents, status_word, task_status
 from .provider import NUDGE, provider_cut, provider_error, PROVIDER_WAITS
 from .sessions import find_lost_logs, refresh_sessions, session_of
-from .github import already_merged, finish, github, merged_here, pr_merged, pr_pending, pr_problem, pr_queue, pr_view, queue_removed, watch_main
+from .github import already_merged, finish, github, merged_here, pr_merged, pr_pending, pr_problem, pr_queue, pr_view, pr_waits, queue_removed, watch_main, BEHIND
 from .launch import default_space
 from .store import locate, read_list, Store, store_files
 from .queues import machine_hold, refresh_ext, running_count, set_hold, waiting_ext, waiting_for
@@ -63,7 +63,11 @@ def facts(s, t, report):
                 problem = queue_removed(q["reason"] or problem)
         elif v.get("state") == "OPEN" and t.get("attention", "").startswith("The merge queue removed it"):
             problem = t["attention"]
-        t["_pr_fresh"] = not problem and not pr_pending(v)
+        # A required approval not given yet: Merging, calmly waiting (no try, no news) until it is.
+        pr["waiting"] = pr_waits(v)
+        if not pr["waiting"]:
+            pr.pop("waiting")
+        t["_pr_fresh"] = not problem and not pr_pending(v) and not pr.get("waiting")
         try:
             pr_news(s, t, v, report)
         except Exception as e:  # never stops the tick
@@ -74,7 +78,7 @@ def facts(s, t, report):
             if problem:
                 t["attention"], t["attention_at"] = problem, now()
                 report["attention"].append(t["id"])
-            elif t.get("attention", "").startswith(("Checks failing", "It conflicts", "The pull request was closed", MERGE_FAILED)):
+            elif t.get("attention", "").startswith(("Checks failing", "It conflicts", "The pull request was closed", BEHIND, MERGE_FAILED)):
                 t.pop("attention")
     elif merged_here(s, t) and not at_work(s, t):
         t["merged"] = True

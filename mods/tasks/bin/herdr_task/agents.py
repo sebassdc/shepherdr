@@ -118,7 +118,7 @@ def task_status(task, live):
         if (task.get("pr") or {}).get("queued") and not task.get("merged"):
             return "merging", None, "In GitHub's merge queue"
         if task.get("auto_merge") and task.get("pr") and not task.get("merged"):
-            return "merging", None, "Merges once its checks pass"
+            return "merging", None, task["pr"].get("waiting") or "Merges once its checks pass"
         return "ready", None, None
     # An agent that hasn't reported yet is starting: working.
     if any(x not in ("idle", "done", "blocked") for x in states):
