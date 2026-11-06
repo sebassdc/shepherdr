@@ -211,6 +211,15 @@ def set_notes(t, args):
             t.pop(f"{which}_notes", None)
 
 
+def cmd_reviewer_check(args):
+    with open_store(args, write=False) as s:
+        rows = task_settings(s, s.find(args.id), check_reviewer=True)
+    reviewer = next((x for x in rows if x["label"] == "Reviewer"), None)
+    if reviewer is None:
+        raise Fail("Review is off. No reviewer started.")
+    say(args, reviewer, "Reviewer: " + reviewer["text"])
+
+
 def cmd_show(args):
     with open_store(args) as s:
         t = s.find(args.id)

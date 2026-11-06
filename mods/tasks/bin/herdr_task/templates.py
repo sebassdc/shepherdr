@@ -90,7 +90,9 @@ WORKER_MD_BEFORE_NO_DAEMON = WORKER_MD_BEFORE_FEEDBACK + FEEDBACK_RULE
 # server can keep a sign-in the person has since replaced, and every turn then fails on it.
 NO_DAEMON_OLD = "its command `codex --sandbox read-only --ask-for-approval never`"
 NO_DAEMON_RULE = "its command `codex --no-daemon --sandbox read-only --ask-for-approval never`"
-WORKER_MD = WORKER_MD_BEFORE_NO_DAEMON.replace(NO_DAEMON_OLD, NO_DAEMON_RULE)
+WORKER_MD_BEFORE_REVIEWER_CHECK = WORKER_MD_BEFORE_NO_DAEMON.replace(NO_DAEMON_OLD, NO_DAEMON_RULE)
+REVIEWER_CHECK_RULE = "Before starting it, run the `herdr-task reviewer-check` command at the end of your brief and use its Reviewer line, overriding the earlier Settings block. If it gives fallback guidance, tell the person in your chat and use that fallback. If the check fails, do not start a reviewer; tell the person its guidance. If Codex later fails with a sign-in or token-refresh error, end that reviewer, tell the person to run `codex login`, and use your own CLI instead (if your own CLI is Codex too, stop and ask for sign-in). Treat startup warnings alone as harmless; wait for the turn's result. "
+WORKER_MD = WORKER_MD_BEFORE_REVIEWER_CHECK.replace("Commit, then have fresh eyes", REVIEWER_CHECK_RULE + "Commit, then have fresh eyes")
 
 REVIEWER_MD_BEFORE_SUBAGENT = """You review one Herdr task's work before it can merge. Read only: never edit files, commit or push.
 - Read the task, then the diff of its branch against its base, and run the project's checks.
@@ -117,7 +119,7 @@ OLD_WORKER_READY = """You work on one Herdr task. Stay within the task's scope a
 - When the work is finished, run the `herdr-task ready` command given at the end of your brief, with a short summary. That puts the task in Ready for the person, who accepts it. Never mark a task done yourself.
 """
 OLD_WORKER_MD = OLD_WORKER_READY.split("- When the work is finished")[0]
-OLD_WORKERS = (WORKER_MD_BEFORE_NO_DAEMON, WORKER_MD_BEFORE_FEEDBACK, WORKER_MD_BEFORE_SUBAGENTS, WORKER_MD_BEFORE_LEFT, WORKER_MD_BEFORE_DETAILS, WORKER_MD_BEFORE_CUT, WORKER_MD_BEFORE_ESTIMATE, WORKER_MD_BEFORE_SUMMARY, WORKER_MD_BEFORE_GATE, WORKER_MD_BEFORE_TEMPLATES, WORKER_MD_BEFORE_NEWS, OLD_WORKER_READY, OLD_WORKER_MD, OLD_WORKER_MD.replace(OLD_WORKER_MD.split("\n")[0], OLD_WORKER_FIRST), OLD_WORKER_REVIEW)
+OLD_WORKERS = (WORKER_MD_BEFORE_REVIEWER_CHECK, WORKER_MD_BEFORE_NO_DAEMON, WORKER_MD_BEFORE_FEEDBACK, WORKER_MD_BEFORE_SUBAGENTS, WORKER_MD_BEFORE_LEFT, WORKER_MD_BEFORE_DETAILS, WORKER_MD_BEFORE_CUT, WORKER_MD_BEFORE_ESTIMATE, WORKER_MD_BEFORE_SUMMARY, WORKER_MD_BEFORE_GATE, WORKER_MD_BEFORE_TEMPLATES, WORKER_MD_BEFORE_NEWS, OLD_WORKER_READY, OLD_WORKER_MD, OLD_WORKER_MD.replace(OLD_WORKER_MD.split("\n")[0], OLD_WORKER_FIRST), OLD_WORKER_REVIEW)
 
 
 TEMPLATE_HEADS = {

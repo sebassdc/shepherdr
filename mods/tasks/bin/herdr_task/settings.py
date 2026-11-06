@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 
 from .base import Fail, HOME, MAX_RUNNING, STORE
 
@@ -354,7 +355,7 @@ CLI_CHECK = os.path.join(os.path.dirname(STORE), "cli-check.json")  # takeover.p
 
 def cli_here(kind):
     """This machine's last word on a CLI from the scheduler's sign-in check (`codex login status`,
-    `claude auth status`; takeover.py's cli_check_pass, at most CHECK_EVERY old): "ready",
+    `claude auth status`; takeover.py's cli_check_pass): "ready",
     "signed-out", "missing" or None (unknown). Only read: a brief never waits on the CLIs."""
     try:
         with open(CLI_CHECK) as f:
@@ -363,17 +364,39 @@ def cli_here(kind):
         return None
 
 
+def cli_now(kind):
+    """Codex's own sign-in status now, bounded and without exposing its account details."""
+    if kind != "codex":
+        return cli_here(kind)
+    try:
+        r = subprocess.run(["codex", "login", "status"], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+    except FileNotFoundError:
+        return "missing"
+    except (OSError, subprocess.TimeoutExpired):
+        return "unavailable"
+    words = r.stdout + "\n" + r.stderr
+    if r.returncode == 0 and re.search(r"^Logged in\b", words, re.I | re.M):
+        return "ready"
+    if re.search(r"not logged in|token.*refresh|sign in again", words, re.I):
+        return "signed-out"
+    return "unavailable"
+
+
 def reviewer_pick(who, own, state):
     """(reviewer, why): a reviewer CLI that isn't signed in here would sit at its sign-in screen, so
     the task's own CLI reviews instead (as other_cli when the other isn't installed), and why says
     what to do. Unknown or ready: as asked."""
-    if state != "signed-out" or who == own or who not in SIGN_IN:
+    if state not in ("signed-out", "missing", "unavailable") or who == own or who not in SIGN_IN:
         return who, None
     name, cmd = SIGN_IN[who]
-    return own, f"{name} isn't signed in here: run `{cmd}`, then ask for the review again"
+    why = {"signed-out": f"{name} isn't signed in here: run `{cmd}`, then ask for the review again",
+           "missing": f"{name} isn't installed here: install it and run `{cmd}`, then ask for the review again",
+           "unavailable": f"{name}'s sign-in couldn't be checked: run `{cmd}`, then ask for the review again"}
+    return own, why[state]
 
 
-def task_settings(s, t, space=None, argv=None):
+def task_settings(s, t, space=None, argv=None, check_reviewer=False):
     """The settings that shape this task's work, each {label, text, value, by}."""
     space = space or t.get("space")
     cfg = settings_for(s, space)
@@ -405,7 +428,10 @@ def task_settings(s, t, space=None, argv=None):
             if t.get(f"reviewer_{f}"):
                 rv[f] = t[f"reviewer_{f}"]
         want = rv.get("agent") or other_cli(agent)
-        who, why = reviewer_pick(want, agent, cli_here(want))
+        state = cli_now(want) if check_reviewer else cli_here(want)
+        who, why = reviewer_pick(want, agent, state)
+        if check_reviewer and who == "codex" and (state if want == "codex" else cli_now("codex")) != "ready":
+            raise Fail("Codex isn't ready: run `codex login`, then ask for the review again. No reviewer started. Tell the person so in your chat.")
         if why:  # its model and effort were for the CLI that can't run
             rv = {}
         text = who + (f", model {rv['model']}" if rv.get("model") else "") + (f", effort {rv['effort']}" if rv.get("effort") else "")

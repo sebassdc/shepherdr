@@ -1575,7 +1575,7 @@ class ReviewerCanRun(unittest.TestCase):
         from herdr_task import settings
         self.settings = settings
 
-    def reviewer(self, codex, reviewer=None, agent="claude", model=None):
+    def reviewer(self, codex, reviewer=None, agent="claude", model=None, check=False):
         from unittest import mock
         cfg = {"tasks": {"review_rounds": 3}, "reviewer": dict({"agent": reviewer} if reviewer else {}, **({"model": model} if model else {}))}
         path = os.path.join(tempfile.mkdtemp(), "cli-check.json")
@@ -1586,8 +1586,82 @@ class ReviewerCanRun(unittest.TestCase):
                 mock.patch.object(self.settings, "by_layer", lambda *a: "all"), \
                 mock.patch.object(self.settings, "CLI_CHECK", path), \
                 mock.patch.object(self.settings.shutil, "which", lambda x: "/usr/bin/" + x):
-            return next(x for x in self.settings.task_settings(None, {"id": 1, "mode": "worktree"}, argv=[agent])
+            return next(x for x in self.settings.task_settings(None, {"id": 1, "mode": "worktree"}, argv=[agent], check_reviewer=check)
                         if x["label"] == "Reviewer")
+
+    def test_fresh_sign_in_check_overrides_absent_or_stale_cache(self):
+        from unittest import mock
+        for cached in (None, "ready", "signed-out"):
+            for output in ("Not logged in", "Your access token could not be refreshed"):
+                with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", output)) as run:
+                    r = self.reviewer(cached, reviewer="codex", check=True)
+                self.assertEqual(r["value"]["agent"], "claude")
+                self.assertIn("`codex login`", r["text"])
+                self.assertIn("Tell the person", r["text"])
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(run.call_args.args[0], ["codex", "login", "status"])
+                self.assertEqual(run.call_args.kwargs["timeout"], 10)
+        with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "Logged in using ChatGPT")):
+            self.assertEqual(self.reviewer("signed-out", check=True)["value"]["agent"], "codex")
+
+    def test_missing_or_unreadable_login_does_not_start_codex(self):
+        from unittest import mock
+        for error in (FileNotFoundError(), subprocess.TimeoutExpired("codex", 10), OSError("denied")):
+            with mock.patch("subprocess.run", side_effect=error):
+                r = self.reviewer("ready", reviewer="codex", check=True)
+            self.assertEqual(r["value"]["agent"], "claude")
+        with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "unexpected output")):
+            self.assertEqual(self.reviewer("ready", check=True)["value"]["agent"], "claude")
+
+    def test_no_signed_in_codex_fallback_stops_the_check(self):
+        from unittest import mock
+        with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", "Not logged in")):
+            with self.assertRaisesRegex(self.settings.Fail, "codex login.*No reviewer started"):
+                self.reviewer("ready", reviewer="codex", agent="codex", check=True)
+
+    def test_worker_checks_before_launch_and_handles_auth_failure(self):
+        from herdr_task import templates
+        with open(os.path.join(ROOT, "templates", "worker.md")) as f:
+            worker = f.read()
+        for words in (worker, templates.WORKER_MD):
+            self.assertIn("reviewer-check", words)
+            self.assertIn("If the check fails, do not start", words)
+            self.assertIn("token-refresh", words)
+            self.assertIn("startup warnings alone", words)
+
+    def test_reviewer_check_command_returns_fallback_without_starting_it(self):
+        import argparse
+        import contextlib
+        import io
+        from unittest import mock
+        from herdr_task import commands, launch
+        task = {"id": 1, "mode": "worktree", "agents": [{"argv": ["claude"]}]}
+        store = Store([task])
+        cfg = {"tasks": {"review_rounds": 3}, "reviewer": {"agent": "codex", "model": "gpt-x"}}
+        out = io.StringIO()
+        with mock.patch.object(commands, "open_store", return_value=store), \
+                mock.patch.object(self.settings, "settings_for", return_value=cfg), \
+                mock.patch.object(self.settings, "by_layer", return_value=None), \
+                mock.patch.object(self.settings, "cli_here", return_value="ready"), \
+                mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", "Not logged in")) as run, \
+                contextlib.redirect_stdout(out):
+            commands.cmd_reviewer_check(argparse.Namespace(id="1", folder="/f", json=True))
+        row = json.loads(out.getvalue())
+        self.assertEqual(row["value"], {"agent": "claude", "model": None, "effort": None})
+        self.assertIn("`codex login`", row["text"])
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[0], ["codex", "login", "status"])
+        self.assertIn("reviewer-check", launch.OWN)
+
+    def test_unedited_worker_gets_the_preflight_instructions(self):
+        from unittest import mock
+        from herdr_task import templates
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "worker.md")
+            with open(path, "w") as f:
+                f.write(templates.TEMPLATE_HEADS["worker"] + templates.WORKER_MD_BEFORE_REVIEWER_CHECK)
+            with mock.patch.object(templates, "TEMPLATES", d):
+                self.assertEqual(templates.instructions("worker"), templates.WORKER_MD.strip())
 
     def test_codex_signed_in_or_unknown_reviews(self):
         for state in ("ready", None):
