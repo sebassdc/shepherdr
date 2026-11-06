@@ -115,6 +115,8 @@ def task_status(task, live):
     if st == "ready":
         if task.get("merge_requested") and live:
             return "merging", None, None
+        if (task.get("pr") or {}).get("queued") and not task.get("merged"):
+            return "merging", None, "In GitHub's merge queue"
         if task.get("auto_merge") and task.get("pr") and not task.get("merged"):
             return "merging", None, "Merges once its checks pass"
         return "ready", None, None
