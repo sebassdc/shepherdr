@@ -1664,9 +1664,12 @@ class MergedOnlyWithOwnWork(unittest.TestCase):
                                                        proof=None, agents_md=None))
         return self.task["state"], bool(self.task.get("merged"))
 
-    def test_ready_with_no_own_commits_and_review_on_closes_as_nothing_to_merge(self):
+    def test_ready_with_no_own_commits_and_review_on_waits_for_accept(self):
         self.task["review_gate"] = True
-        self.assertEqual(self.ready_now(review=True), ("done", False))
+        self.assertEqual(self.ready_now(review=True), ("ready", False))
+        self.assertEqual(self.tick_once(), ("ready", False))
+        self.accept_now()
+        self.assertEqual(self.task["state"], "done")
         self.assertTrue(self.task["nothing_to_merge"])
         self.assertFalse(self.task.get("reviews"))
 
@@ -1687,6 +1690,69 @@ class MergedOnlyWithOwnWork(unittest.TestCase):
         self.assertEqual(self.ready_now(), ("done", True))
         self.assertNotIn("pr", self.task)
         self.assertNotIn(("pr", "create"), calls)
+
+    # SHEP-96: a task with no commits beyond its base (research, an artifact only) still waits in
+    # Ready for the person's Accept, its words kept; Accept just marks it done and cleans up.
+    def ready_said(self, summary="Found three options.", details="- Read five sources"):
+        import argparse
+        from unittest import mock
+        with mock.patch.object(self.commands, "review_refusal", lambda *a: None), \
+                mock.patch.object(self.commands, "find_proof", lambda *a: None), \
+                mock.patch.object(self.commands, "task_settings", lambda *a: []), \
+                mock.patch.object(self.commands, "ready_turns", lambda *a: {}), \
+                mock.patch.object(self.commands, "merge_policy", lambda *a: "auto"), \
+                mock.patch.object(self.commands, "tell", lambda *a: (_ for _ in ()).throw(AssertionError("asked to merge"))), \
+                mock.patch.object(self.commands, "pr_open", lambda *a: (_ for _ in ()).throw(AssertionError("a pull request opened"))):
+            self.commands.cmd_ready(argparse.Namespace(id="SHEP-1", json=True, folder=None, summary=summary, details=details,
+                                                       proof=None, agents_md=None))
+        return self.task["state"]
+
+    def accept_now(self):
+        import argparse
+        from unittest import mock
+        import herdr_task.github as github
+        with mock.patch.object(self.commands, "finish", github.finish):  # the real one: worktree and branch go
+            self.commands.cmd_accept(argparse.Namespace(id="SHEP-1", json=True, folder=None))
+
+    def test_ready_with_no_commits_waits_for_accept(self):
+        calls = self.github([])
+        self.assertEqual(self.ready_said(), "ready")
+        self.assertEqual((self.task["summary"], self.task["details"]), ("Found three options.", "- Read five sources"))
+        self.assertTrue(self.task["nothing_to_merge"])
+        self.assertNotIn("auto_merge", self.task)
+        self.assertNotIn("pr", self.task)
+        self.assertNotIn(("pr", "create"), calls)
+        self.assertTrue(os.path.isdir(self.task["worktree"]))
+        # the tick leaves it for the person too
+        self.assertEqual(self.tick_once(), ("ready", False))
+        self.task["gh_checked"] = 0
+        self.assertEqual(self.tick_once(), ("ready", False))
+        # Accept: done, never merged, its worktree and branch cleaned up
+        self.accept_now()
+        self.assertEqual(self.task["state"], "done")
+        self.assertFalse(self.task.get("merged"))
+        self.assertTrue(self.task["nothing_to_merge"])
+        self.assertFalse(os.path.isdir(self.task["worktree"]))
+        self.assertEqual(self.git(self.main, "branch", "--list", "task/1"), "")
+
+    def test_ready_only_caught_up_with_main_waits_for_accept(self):
+        self.github([])
+        self.commit(self.main, "another task merged")
+        self.git(self.task["worktree"], "merge", "-q", "--ff-only", "main")
+        self.assertEqual(self.ready_said(), "ready")
+        self.assertTrue(self.task["nothing_to_merge"])
+        self.accept_now()
+        self.assertEqual(self.task["state"], "done")
+        self.assertFalse(self.task.get("merged"))
+
+    def test_commits_after_a_no_commit_ready_go_the_usual_way(self):
+        self.github([])
+        self.assertEqual(self.ready_said(), "ready")
+        self.task["state"] = "running"  # back at work
+        self.change(self.task["worktree"], "reactions on the left")
+        with self.assertRaises(AssertionError):
+            self.ready_said()  # on to pr_open
+        self.assertNotIn("nothing_to_merge", self.task)
 
     def test_ready_with_work_left_opens_its_pull_request(self):
         self.change(self.task["worktree"], "reactions on the left")
@@ -1722,10 +1788,13 @@ class MergedOnlyWithOwnWork(unittest.TestCase):
         self.git(self.main, "reset", "-q", "--hard", "HEAD~1")  # local main behind its remote
         self.git(self.task["worktree"], "rebase", "-q", "origin/main")
 
-    def test_ready_rebased_onto_origin_main_with_nothing_of_its_own_is_done(self):
+    def test_ready_rebased_onto_origin_main_with_nothing_of_its_own_waits_for_accept(self):
         self.rebased_onto_origin()
         calls = self.github([])
-        self.assertEqual(self.ready_now(), ("done", False))
+        self.assertEqual(self.ready_now(), ("ready", False))
+        self.assertEqual(self.tick_once(), ("ready", False))
+        self.accept_now()
+        self.assertEqual(self.task["state"], "done")
         self.assertTrue(self.task.get("nothing_to_merge"))
         self.assertNotIn(("pr", "create"), calls)
 
@@ -2626,12 +2695,84 @@ class FastOffIsSaid(unittest.TestCase):
         self.assertIn('{"fastMode": false}', argv_for({"agent": "claude", "fast": False}))
 
 
+class AcceptCardArtifacts(unittest.TestCase):
+    """SHEP-96: the Accept card links the task's other artifacts (a research report) beside its proof."""
+
+    def test_its_other_artifacts_since_it_started(self):
+        from unittest import mock
+        sys.path.insert(0, BIN)
+        import herdr_task.proof as proof
+        arts = [{"id": "report-0003", "title": "SHEP-1: Three options", "task": "SHEP-1", "at": 300},
+                {"id": "proof-0002", "title": "SHEP-1: Reactions · Proof", "task": "SHEP-1", "at": 200, "files": ["recipe.json"]},
+                {"id": "other-0004", "title": "SHEP-2: Elsewhere", "task": "SHEP-2", "at": 400},
+                {"id": "old-0001", "title": "SHEP-1: Before it started", "task": "SHEP-1", "at": 50}]
+        s = Store([{"id": 1, "title": "Reactions", "state": "ready", "started": 100, "agents": []}])
+        t = s.data["tasks"][0]
+        with mock.patch.object(proof, "artifacts_of", lambda folder: arts):
+            self.assertEqual(proof.task_artifacts(s, t, {"id": "proof-0002"}), [{"id": "report-0003", "title": "SHEP-1: Three options"}])
+            self.assertEqual([a["id"] for a in proof.task_artifacts(s, t)], ["report-0003", "proof-0002"])
+
+
 if __name__ == "__main__":
     unittest.main()
 
 
+class CleanEnv(unittest.TestCase):
+    """SHEP-86: herdr-core's holder hands every terminal the environment it was started with, so a holder started from
+    inside Claude Code would hand each agent that session's markers (transcripts off, no folder-trust prompt). A task's
+    agent launched through launch() runs without them; the person's own Claude Code config stays. Fake values only:
+    hc is never run, the launch's own argv runs for real with `env` as its agent."""
+    MARKERS = {"CLAUDECODE": "1", "CLAUDE_PID": "4242", "CLAUDE_CODE_CHILD_SESSION": "1", "CLAUDE_CODE_SESSION_ID": "fake-session",
+               "CLAUDE_CODE_ENTRYPOINT": "cli", "CLAUDE_CODE_MESSAGING_SOCKET": "/tmp/fake.sock", "CLAUDE_CODE_MESSAGING_TOKEN": "fake-token"}
+    KEPT = {"CLAUDE_CONFIG_DIR": "/tmp/fake-claude", "CLAUDE_CODE_USE_BEDROCK": "1", "CLAUDE_CODE_DISABLE_AUTOUPDATER": "1", "FAKE_OTHER": "x"}
+
+    def agent_env(self, argv):
+        """What the agent at the end of a launch argv sees, started from a parent environment with the markers."""
+        out = subprocess.run(argv, env={"PATH": os.environ["PATH"], **self.MARKERS, **self.KEPT}, capture_output=True, text=True, timeout=20)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return dict(l.split("=", 1) for l in out.stdout.splitlines() if "=" in l)
+
+    def test_a_task_agent_starts_without_a_parent_claude_session(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        sys.path.insert(0, BIN)
+        import herdr_task.launch as L
+        ran = []
+
+        def run(argv, *a, **k):
+            ran.append(argv)
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"address": "t9"}), "")
+        s = SimpleNamespace(key=lambda t: "dev#6", dirty=False)
+        task = {"id": 6, "title": "fake", "agents": []}
+        with mock.patch.object(L, "run", run), mock.patch.object(L, "folder_for", lambda s, t: "/tmp"), \
+                mock.patch.object(L, "agent_name", lambda *a: "dev-6-fake"), mock.patch.object(L, "track", lambda *a: None), \
+                mock.patch.object(L, "coordinator_tab", lambda a: None), mock.patch.object(L, "own_argv", lambda a: a), \
+                mock.patch.object(L, "in_shell", lambda a: a), mock.patch.object(L, "low_priority", lambda a, n: a):
+            L.launch(s, task, ["env"], "sp1")
+        hc = ran[0]
+        self.assertEqual(hc[:2], ["hc", "run"])
+        env = self.agent_env(hc[hc.index("--") + 1:])
+        for k in self.MARKERS:
+            self.assertNotIn(k, env)
+        for k, v in self.KEPT.items():
+            self.assertEqual(env.get(k), v)
+        self.assertEqual(env.get("HERDR_BROWSER_TASK"), "dev#6")  # what the launch sets on purpose stays
+
+    def test_the_same_line_everywhere(self):
+        """herdr-task, the window and the service (core/clean-env.js) and restart.sh clear the same names."""
+        sys.path.insert(0, BIN)
+        import herdr_task.launch as L
+        js = subprocess.run(["sh", "-c", 'grep -o "export const CLEAN_ENV = .*" "$1"', "x", os.path.join(ROOT, "core", "clean-env.js")],
+                            capture_output=True, text=True).stdout.strip()
+        self.assertEqual(js.split("`")[1].replace("\\\\", "\\"), L.CLEAN_ENV)
+        restart = os.path.join(ROOT, "mods", "coordinator", "restart.sh")
+        line = subprocess.run(["bash", "-c", 'eval "$(grep "^clean=" "$1")"; printf %s "$clean"', "x", restart], capture_output=True, text=True).stdout
+        self.assertEqual(line, L.CLEAN_ENV)
+        self.assertEqual(self.agent_env(["sh", "-c", line + ' exec env']).keys() & self.MARKERS.keys(), set())
+
+
 class Revive(unittest.TestCase):
-    """SHEP-30: an Assistant or a task's agent the core gave a plain shell (a crash, a power loss, a
+    """SHEP-30:an Assistant or a task's agent the core gave a plain shell (a crash, a power loss, a
     reboot) gets its agent typed back into that shell, on its own session. A fake core in memory:
     hc and the agents' session files are never touched."""
 
@@ -2652,7 +2793,9 @@ class Revive(unittest.TestCase):
                 k, v = args[3].split("=", 1)
                 self.terms[args[2]].setdefault("labels", {})[k] = v
             elif args[:2] == ["hc", "send"]:
-                self.sent.append((args[2], args[3]))
+                # each line first clears a parent Claude Code session's markers (SHEP-86)
+                self.assertTrue(args[3].startswith(revive.CLEAN_ENV + " "), args[3])
+                self.sent.append((args[2], args[3][len(revive.CLEAN_ENV) + 1:]))
             elif args[:2] == ["hc", "read"]:
                 out = self.screens.get(args[2], "")
             else:
@@ -3804,3 +3947,41 @@ class Feedback(unittest.TestCase):
         with open(os.path.join(BIN, "herdr_task", "autopilot.py")) as f:
             self.assertIn("herdr-task feedback", f.read())
         self.assertIn("feedback", __import__("herdr_task.launch", fromlist=["OWN"]).OWN)
+
+
+class CodexAsksOnTheCard(unittest.TestCase):
+    """SHEP-91: a Codex worker's PermissionRequest hook (`herdr-task _allow`) allows its own commands, and hands anything
+    else to the chat's card (ask-hook.sh, marked HERDR_ASK_CHAINED), waiting as long as the card does."""
+
+    def run_allow(self, command, hook):
+        app = tempfile.mkdtemp()
+        if hook is not None:
+            os.makedirs(os.path.join(app, "mods", "chat"))
+            with open(os.path.join(app, "mods", "chat", "ask-hook.sh"), "w") as f:
+                f.write(hook)
+        code = ("import sys, types, argparse; sys.dont_write_bytecode = True; sys.path.insert(0, sys.argv[1]);"
+                "from herdr_task.launch import cmd_allow; cmd_allow(argparse.Namespace(command='/x/herdr-task'))")
+        req = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "turn_id": "t1"})
+        env = {**os.environ, "HERDR_APP_HOME": app}
+        env.pop("HERDR_ASK_CHAINED", None)
+        return subprocess.run([sys.executable, "-c", code, BIN], input=req, capture_output=True, text=True, env=env)
+
+    def test_its_own_command_never_asks(self):
+        out = self.run_allow("/x/herdr-task status SHEP-1 hi", 'echo "should not run"')
+        self.assertEqual(json.loads(out.stdout)["hookSpecificOutput"]["decision"], {"behavior": "allow"}, out.stderr)
+
+    def test_anything_else_goes_to_the_card(self):
+        card = ('[ "$HERDR_ASK_CHAINED" = 1 ] || exit 0; grep -q "rm -rf build" || exit 0; '
+                'echo \'{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"no"}}}\'')
+        out = self.run_allow("rm -rf build", card)
+        self.assertEqual(json.loads(out.stdout)["hookSpecificOutput"]["decision"], {"behavior": "deny", "message": "no"}, out.stderr)
+        # no card answer (answered in the terminal, or no chat hook installed): no decision, Codex asks itself
+        self.assertEqual(self.run_allow("rm -rf build", "exit 0").stdout, "")
+        self.assertEqual(self.run_allow("rm -rf build", None).stdout, "")
+
+    def test_codex_waits_as_long_as_the_card(self):
+        sys.path.insert(0, BIN)
+        from herdr_task import launch
+        argv = launch.own_argv(["codex", "--sandbox", "workspace-write"])
+        self.assertIn(f"timeout={launch.ASK_TIMEOUT}", argv[2])
+        self.assertEqual(launch.ASK_TIMEOUT, 1800)

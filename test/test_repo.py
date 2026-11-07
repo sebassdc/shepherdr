@@ -286,7 +286,7 @@ class Repo(unittest.TestCase):
 
     def test_version_everywhere(self):
         v = re.search(r'^VERSION = "([^"]+)"', open(J("bin", "shepherdr")).read(), re.M).group(1)
-        self.assertEqual(v, "3.1.12")
+        self.assertEqual(v, "3.1.16")
         self.assertRegex(open(J("CHANGELOG.md")).read(), rf"(?m)^## {re.escape(v)}\b", "CHANGELOG's newest entry")
         self.assertIn(v, open(J("RECIPE.md")).read())
         self.assertIn(v, open(J("README.md")).read())
@@ -294,6 +294,55 @@ class Repo(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def shell_scripts():
+    """Every shipped shell script: install.sh and any file under the shipped folders whose first line runs sh or bash."""
+    yield J("install.sh")
+    for f in text_files():
+        try:
+            with open(f, encoding="utf-8") as fh:
+                first = fh.readline()
+        except (UnicodeDecodeError, OSError):
+            continue
+        if re.match(r"#!\s*(/usr/bin/env\s+)?(/bin/)?(ba)?sh\b", first):
+            yield f
+
+
+class ShellScripts(unittest.TestCase):
+    """#731: macOS /bin/sh is bash 3.2, which scans a here-doc inside $( ) for quotes, so one apostrophe in its
+    text breaks the whole script ("unexpected EOF while looking for matching `''"). Shipped scripts keep
+    here-docs out of $( ), and each one parses."""
+
+    def test_found_the_scripts(self):
+        names = {os.path.relpath(f, ROOT) for f in shell_scripts()}
+        self.assertIn(os.path.join("mods", "chat", "session-note.sh"), names)
+        self.assertIn("install.sh", names)
+
+    def test_no_here_doc_inside_command_substitution(self):
+        # $( up to its first ), across lines, holding a here-doc (<< or <<-, not the <<< here-string)
+        pat = re.compile(r"\$\([^)]*?(?<!<)<<-?(?!<)\s*['\"]?\w")
+        for f in shell_scripts():
+            with open(f, encoding="utf-8") as fh:
+                m = pat.search(fh.read())
+            self.assertIsNone(m, f"{os.path.relpath(f, ROOT)}: here-doc inside $( ): {m and m.group(0)!r}")
+
+    def test_pattern_catches_the_old_note(self):
+        pat = re.compile(r"\$\([^)]*?(?<!<)<<-?(?!<)\s*['\"]?\w")
+        self.assertTrue(pat.search("note=$(cat <<'JSON'\nthe person's message\nJSON\n)"))
+        self.assertTrue(pat.search("x=$(\n  cat <<EOF\nhi\nEOF\n)"))
+        self.assertFalse(pat.search('new=$(jq -r .a <<<"$out")'))
+
+    def test_each_parses(self):
+        import shutil
+        import subprocess
+        for f in shell_scripts():
+            with open(f, encoding="utf-8") as fh:
+                shell = "bash" if "bash" in fh.readline() else "sh"
+            if not shutil.which(shell):
+                continue
+            out = subprocess.run([shell, "-n", f], capture_output=True, text=True)
+            self.assertEqual(out.returncode, 0, f"{shell} -n {os.path.relpath(f, ROOT)}: {out.stderr}")
 
 
 class SessionNote(unittest.TestCase):
@@ -342,27 +391,62 @@ class SessionNote(unittest.TestCase):
             self.assertTrue(ctx.endswith('`herdr-artifact guide` first. Reactions (on in Settings): <hc react="👀" to="x"/>'), ctx[-120:])
             self.assertEqual(asked.split(), ["_session-note", terminal])
 
-    def test_shell_scripts_run_on_bash_3_2(self):
-        # bash 3.2 (a Mac's /bin/sh) mis-reads apostrophes in a heredoc inside $( ): this hook once failed every
-        # Claude session there. CI's dash and bash 5 parse it fine, so the pattern itself is refused; each
-        # script also parses with the shell its first line names (on a Mac, bash 3.2).
-        import subprocess
-        scripts = {}
-        for f in subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True).stdout.split():
-            with open(os.path.join(ROOT, f), "rb") as fh:
-                first = fh.readline(200).decode("utf-8", "replace").split()
-            if first and first[0].startswith("#!") and re.search(r"(^|/)(ba)?sh$", first[-1]):
-                scripts[f] = [first[0][2:], *first[1:]]
-        self.assertIn("mods/chat/session-note.sh", scripts)
-        for f, shell in scripts.items():
-            with open(os.path.join(ROOT, f)) as fh:
-                for n, line in enumerate(fh, 1):
-                    if not line.lstrip().startswith("#"):
-                        self.assertNotRegex(line, r"\$\([^)]*(?<!<)<<(?!<)", f"{f}:{n}: heredoc inside $( ), use read -r")
-            out = subprocess.run([*shell, "-n", os.path.join(ROOT, f)], capture_output=True, text=True)
-            self.assertEqual(out.returncode, 0, f"{f}: {out.stderr}")
-
     def test_outside_herdr_it_says_nothing(self):
         out, asked = self.run_hook(None, "")
         self.assertEqual(out, "")
         self.assertFalse(asked)
+
+
+class Restart(unittest.TestCase):
+    def test_argv_paths_keep_words_and_clean_the_environment(self):
+        import shutil
+        import subprocess
+        import sys
+        import tempfile
+        if not shutil.which("jq"):
+            self.skipTest("needs jq")
+        with tempfile.TemporaryDirectory() as d:
+            templates = os.path.join(d, "templates")
+            os.makedirs(templates)
+            source = open(J("mods", "coordinator", "restart.sh")).read()
+            self.assertNotIn("mapfile", source)
+            script = os.path.join(d, "restart.sh")
+            with open(script, "w") as f:
+                f.write(source.replace("$HOME/.config/herdr-core/templates", templates))
+            info = {"labels": {"herdr.space": "sp1", "herdr.tab": "tb1"}, "cwd": d}
+            fake = os.path.join(d, "hc")
+            with open(fake, "w") as f:
+                f.write(f'''#!{sys.executable}
+import json, os, pathlib, subprocess, sys
+a = sys.argv[1:]
+if a[0] == 'get':
+    print({json.dumps(info)!r})
+elif a[0] == 'run':
+    if '--' in a:
+        cmd = a[a.index('--') + 1:]
+    else:
+        text = (pathlib.Path({templates!r}) / (a[-1] + '.md')).read_text()
+        cmd = ['bash', '-c', next(x[9:] for x in text.splitlines() if x.startswith('command: '))]
+    subprocess.run(cmd, check=True)
+    print('{{"address":"t-new","first_message":{{"sent":true}}}}')
+''')
+            os.chmod(fake, 0o755)
+            output = os.path.join(d, "result.json")
+            probe = os.path.join(d, "probe.py")
+            with open(probe, "w") as f:
+                f.write("import json, os, sys\n"
+                        f"json.dump([sys.argv[1:], {{k:v for k,v in os.environ.items() if k.startswith('CLAUDE')}}], open({output!r}, 'w'))\n")
+            words = ["two words", "quote's", "$literal"]
+            argv = json.dumps([sys.executable, probe, *words])
+            for resume in ("", "1"):
+                env = {**os.environ, "PATH": d + os.pathsep + os.environ["PATH"], "HERDR_APP_HOME": d,
+                       "HERDR_RESTART_RESUME": resume, "CLAUDECODE": "1", "CLAUDE_PID": "42",
+                       "CLAUDE_CODE_SESSION_ID": "old", "CLAUDE_CODE_DISABLE_TELEMETRY": "1"}
+                out = subprocess.run(["bash", script, "t-old", argv], capture_output=True, text=True, env=env)
+                self.assertEqual(out.returncode, 0, out.stderr)
+                self.assertEqual(out.stdout.strip(), "t-new")
+                got, kept = json.load(open(output))
+                self.assertEqual(got, words)
+                for key in ("CLAUDECODE", "CLAUDE_PID", "CLAUDE_CODE_SESSION_ID"):
+                    self.assertNotIn(key, kept)
+                self.assertEqual(kept["CLAUDE_CODE_DISABLE_TELEMETRY"], "1")

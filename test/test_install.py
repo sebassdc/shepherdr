@@ -56,10 +56,11 @@ class Install(unittest.TestCase):
         return os.path.join(self.root, *rel)
 
     def test_install_again_update_uninstall(self):
+        os.makedirs(self.p(".codex"))
         out = run("install", "--root", self.root, "--yes").stdout
         self.assertRegex(out, r"files: \d+ new\n")
         rec = json.load(open(self.p(APP, "data/shepherdr/installed.json")))
-        self.assertEqual(rec["version"], "3.1.12")
+        self.assertEqual(rec["version"], "3.1.16")
         self.assertTrue(os.path.isfile(self.p(APP, "mods/tasks/bin/herdr-task")))
         self.assertTrue(os.path.isfile(self.p(APP, "layouts/shepherdr.json")))
         self.assertEqual(os.path.realpath(self.p(".local/bin/herdr-task")), os.path.realpath(self.p(APP, "mods/tasks/bin/herdr-task")))
@@ -71,6 +72,9 @@ class Install(unittest.TestCase):
         hooks = json.load(open(self.p(".claude/settings.json")))
         self.assertEqual(hooks["model"], "x")
         self.assertIn("ask-hook.sh", json.dumps(hooks["hooks"]["PermissionRequest"]))
+        # Codex's approvals come to the chat's card too (SHEP-91)
+        codex = json.load(open(self.p(".codex/hooks.json")))
+        self.assertIn("ask-hook.sh", json.dumps(codex["hooks"]["PermissionRequest"]))
         # Helpers changed: the sync to other machines is held until doctor passes.
         self.assertTrue(os.path.exists(self.p(".herdr/sync-hold")))
         d = run("doctor", "--root", self.root)

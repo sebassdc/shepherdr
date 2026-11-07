@@ -26,8 +26,11 @@ from .browsers import browser_line, browser_path
 # ---- an agent's own herdr-task commands never ask -------------------------------------------
 # As Shepherdr: at each launch the agent is allowed exactly this herdr-task's path, verb by verb,
 # without touching the person's CLI settings: Claude Code in the --settings it gets at launch,
-# Codex through a PermissionRequest hook given with -c (`herdr-task _allow` answers it).
+# Codex through a PermissionRequest hook given with -c (`herdr-task _allow` answers it, and hands
+# anything else to the chat's card: ask_card).
 
+# How long Codex waits on the permission hook: as the chat's card waits (ask-hook.sh).
+ASK_TIMEOUT = 1800
 OWN = ["ready", "reviewed", "reviewer-check", "status", "alert", "feedback", "show", "list", "where"]
 # herdr-secret's agent commands (~/.config/herdr-app/bin/herdr-secret): asking for a secret and
 # using one by name never ask either, as Shepherdr's secret commands. Written by its full path or
@@ -91,10 +94,10 @@ def own_argv(argv):
         # Codex runs a new hook only once trusted. This one hook's trust comes with it, for this
         # launch only: Codex's own key and hash for a -c hook (codex-rs/hooks discovery.rs
         # hook_hash, config fingerprint.rs version_for_toml), so no other hook is trusted by it.
-        ident = {"event_name": "permission_request", "hooks": [{"async": False, "command": hook, "timeout": 10, "type": "command"}]}
+        ident = {"event_name": "permission_request", "hooks": [{"async": False, "command": hook, "timeout": ASK_TIMEOUT, "type": "command"}]}
         digest = hashlib.sha256(json.dumps(ident, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
         key = "/<session-flags>/config.toml:permission_request:0:0"
-        return out[:1] + ["-c", f"hooks.PermissionRequest=[{{hooks=[{{type=\"command\",command={json.dumps(hook)},timeout=10}}]}}]",
+        return out[:1] + ["-c", f"hooks.PermissionRequest=[{{hooks=[{{type=\"command\",command={json.dumps(hook)},timeout={ASK_TIMEOUT}}}]}}]",
                           "-c", f"hooks.state={{{json.dumps(key)}={{trusted_hash=\"sha256:{digest}\"}}}}"] + out[1:]
     return out
 
@@ -128,11 +131,40 @@ def own_command(path, text):
     return bool(sp) and len(words) >= 2 and words[0] in (sp, "herdr-secret") and words[1] in SECRET
 
 
+def ask_hook():
+    """The chat's question-card hook (mods/chat/ask-hook.sh) where Herdr's app home has it, else None."""
+    app = os.environ.get("HERDR_APP_HOME") or os.path.join(os.path.expanduser("~"), ".config", "herdr-app")
+    p = os.path.join(app, "mods", "chat", "ask-hook.sh")
+    return p if os.path.isfile(p) else None
+
+
+def ask_card(raw):
+    """What the chat's card answers for a request (SHEP-91: a Codex worker's permission is answerable
+    in its chat, on the web too), or "" (no decision: Codex asks in its terminal). Codex runs every
+    hook it has and waits for all, so ask-hook.sh's own copy (~/.codex/hooks.json) steps aside for
+    an agent with this hook, and this one runs it, marked HERDR_ASK_CHAINED."""
+    hook = ask_hook()
+    if not hook:
+        return ""
+    try:
+        r = subprocess.run(["sh", hook], input=raw, capture_output=True, timeout=ASK_TIMEOUT - 10,
+                           env={**os.environ, "HERDR_ASK_CHAINED": "1"})
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    out = r.stdout.decode("utf-8", "replace").strip()
+    try:
+        json.loads(out)
+    except ValueError:
+        return ""
+    return out
+
+
 def cmd_allow(args):
     """Codex's PermissionRequest hook: allows this launch's own herdr-task commands; anything else
-    gets no answer, so Codex asks the person as usual."""
+    goes to the chat's card (ask_card), and without one's answer Codex asks the person as usual."""
+    raw = sys.stdin.buffer.read(1 << 20)
     try:
-        data = json.loads(sys.stdin.read(1 << 20) or "{}")
+        data = json.loads(raw or b"{}")
     except ValueError:
         return
     if os.environ.get("HERDR_TASK_HOOK_LOG"):
@@ -144,6 +176,10 @@ def cmd_allow(args):
         cmd = cmd[2] if len(cmd) == 3 and cmd[1] in ("-c", "-lc") else shlex.join(cmd)
     if own_command(args.command, cmd):
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}}}))
+        return
+    out = ask_card(raw)
+    if out:
+        print(out)
 
 
 # ---- starting agents ------------------------------------------------------------------------
@@ -156,6 +192,24 @@ def resume_argv(argv, session):
     if k == "codex":
         return [argv[0], "resume"] + argv[1:] + [session]
     return None
+
+
+# ---- agents never inherit a parent Claude Code session (SHEP-86) ------------------------------
+# herdr-core's holder keeps the environment of whatever started it, and every terminal gets it: a
+# holder started from inside Claude Code hands each agent CLAUDECODE, CLAUDE_PID and
+# CLAUDE_CODE_CHILD_SESSION, SESSION_ID, MESSAGING_*... Claude Code then saves no transcript (the
+# web Chat can't find the conversation) and skips the folder-trust prompt. hc can only add
+# variables, so the launch unsets them first: CLAUDECODE, CLAUDE_PID and CLAUDE_CODE_*, keeping the
+# person's own Claude Code config (_USE_*, _SKIP_*, _DISABLE_*, _OAUTH_*..., CLAUDE_CONFIG_DIR).
+# The same line is core/clean-env.js CLEAN_ENV and mods/coordinator/restart.sh's (test_repo keeps
+# them equal).
+CLEAN_ENV = ("for v in $(env | sed -nE 's/^(CLAUDECODE|CLAUDE_PID|CLAUDE_CODE_[A-Za-z0-9_]+)=.*/\\1/p' | "
+             "grep -vE '^CLAUDE_CODE_(USE|SKIP|DISABLE|ENABLE|MAX|OAUTH|CLIENT|API)_'); do unset \"$v\"; done;")
+
+
+def clean_env(argv):
+    """argv run without a parent Claude Code session's markers (CLEAN_ENV)."""
+    return ["sh", "-c", CLEAN_ENV + ' exec "$@"', "herdr-clean", *argv]
 
 
 def in_shell(argv):
@@ -547,7 +601,7 @@ def launch(s, task, argv, space, message=None, parent=None, resume=None, role=No
     name = agent_name(s, task, "review" if role else None)
     # HERDR_BROWSER_TASK: which task's browser herdr-browser drives (HERD-57), for it and its children.
     r = run(["hc", "run", "--bg", "--json", "--keep", "--cwd", folder_for(s, task), "--name", name,
-             *labels, *rel, "--", *low_priority(["env", f"HERDR_BROWSER_TASK={key}", *in_shell(cmd)], name)])
+             *labels, *rel, "--", *low_priority(clean_env(["env", f"HERDR_BROWSER_TASK={key}", *in_shell(cmd)]), name)])
     try:
         out = json.loads(r.stdout)
     except ValueError:
